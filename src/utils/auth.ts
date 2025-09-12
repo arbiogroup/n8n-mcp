@@ -1,100 +1,70 @@
-import crypto from 'crypto';
+import { JWTService, UserToken } from "../services/jwt-service";
+import { GoogleUser } from "../config/oauth";
 
 export class AuthManager {
-  private validTokens: Set<string>;
-  private tokenExpiry: Map<string, number>;
+  private jwtService: JWTService;
 
-  constructor() {
-    this.validTokens = new Set();
-    this.tokenExpiry = new Map();
+  constructor(jwtService: JWTService) {
+    this.jwtService = jwtService;
   }
 
   /**
-   * Validate an authentication token
+   * Validate JWT token
    */
-  validateToken(token: string | undefined, expectedToken?: string): boolean {
-    if (!expectedToken) {
-      // No authentication required
-      return true;
-    }
-
+  validateToken(token: string | undefined): UserToken | null {
     if (!token) {
-      return false;
+      return null;
     }
 
-    // Check static token
-    if (token === expectedToken) {
-      return true;
-    }
-
-    // Check dynamic tokens
-    if (this.validTokens.has(token)) {
-      const expiry = this.tokenExpiry.get(token);
-      if (expiry && expiry > Date.now()) {
-        return true;
-      } else {
-        // Token expired
-        this.validTokens.delete(token);
-        this.tokenExpiry.delete(token);
-        return false;
-      }
-    }
-
-    return false;
+    return this.jwtService.verifyToken(token);
   }
 
   /**
-   * Generate a new authentication token
+   * Generate access token for user
    */
-  generateToken(expiryHours: number = 24): string {
-    const token = crypto.randomBytes(32).toString('hex');
-    const expiryTime = Date.now() + (expiryHours * 60 * 60 * 1000);
-
-    this.validTokens.add(token);
-    this.tokenExpiry.set(token, expiryTime);
-
-    // Clean up expired tokens
-    this.cleanupExpiredTokens();
-
-    return token;
+  generateAccessToken(user: GoogleUser): string {
+    return this.jwtService.generateAccessToken(user);
   }
 
   /**
-   * Revoke a token
+   * Generate refresh token for user
    */
-  revokeToken(token: string): void {
-    this.validTokens.delete(token);
-    this.tokenExpiry.delete(token);
+  generateRefreshToken(user: GoogleUser): string {
+    return this.jwtService.generateRefreshToken(user);
   }
 
   /**
-   * Clean up expired tokens
+   * Generate both access and refresh tokens
    */
-  private cleanupExpiredTokens(): void {
-    const now = Date.now();
-    for (const [token, expiry] of this.tokenExpiry.entries()) {
-      if (expiry <= now) {
-        this.validTokens.delete(token);
-        this.tokenExpiry.delete(token);
-      }
-    }
+  generateTokenPair(user: GoogleUser) {
+    return this.jwtService.generateTokenPair(user);
   }
 
   /**
-   * Hash a password or token for secure storage
+   * Refresh access token using refresh token
    */
-  static hashToken(token: string): string {
-    return crypto.createHash('sha256').update(token).digest('hex');
+  refreshToken(refreshToken: string) {
+    return this.jwtService.refreshToken(refreshToken);
   }
 
   /**
-   * Compare a plain token with a hashed token
+   * Extract user information from token
    */
-  static compareTokens(plainToken: string, hashedToken: string): boolean {
-    const hashedPlainToken = AuthManager.hashToken(plainToken);
-    return crypto.timingSafeEqual(
-      Buffer.from(hashedPlainToken),
-      Buffer.from(hashedToken)
-    );
+  getUserFromToken(token: string): GoogleUser | null {
+    return this.jwtService.getUserFromToken(token);
+  }
+
+  /**
+   * Check if token is expired
+   */
+  isTokenExpired(token: string): boolean {
+    return this.jwtService.isTokenExpired(token);
+  }
+
+  /**
+   * Validate domain for user
+   */
+  validateDomain(user: GoogleUser): boolean {
+    return this.jwtService.validateDomain(user);
   }
 }
