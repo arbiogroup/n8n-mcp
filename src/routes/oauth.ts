@@ -39,10 +39,36 @@ export class OAuthHandlers {
   };
 
   /**
+   * Build Google OAuth URL with state parameter for CSRF protection
+   */
+  private buildGoogleAuthUrl(): string {
+    const state = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+    const params = new URLSearchParams({
+      client_id: this.config.google.clientId,
+      redirect_uri: this.config.google.callbackUrl,
+      scope: 'openid email profile',
+      response_type: 'code',
+      state: state
+    });
+    return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+  }
+
+  /**
    * Handle Google OAuth callback
    */
   handleGoogleCallback = async (req: Request, res: Response): Promise<void> => {
     try {
+      // Validate state parameter for CSRF protection
+      const state = req.query.state as string;
+      if (!state) {
+        logger.warn("OAuth callback: Missing state parameter");
+        res.status(400).json({
+          error: "invalid_request",
+          error_description: "Missing state parameter",
+        });
+        return;
+      }
+
       const user = req.user as GoogleUser;
 
       if (!user) {
@@ -77,21 +103,26 @@ export class OAuthHandlers {
         domain: user.domain,
       });
 
-      // Return tokens to client
+      // Return the OAuth response directly to the initiator (MCP connector)
+      // This follows the OAuth 2.0 standard specification
       res.status(200).json({
-        success: true,
-        message: "Authentication successful",
+        access_token: tokenPair.accessToken,
+        token_type: "Bearer",
+        expires_in: tokenPair.expiresIn,
+        refresh_token: tokenPair.refreshToken,
+        scope: "openid email profile",
+        // Additional user information (non-standard but useful for MCP)
         user: {
           id: user.id,
           email: user.email,
           name: user.name,
           domain: user.domain,
         },
-        tokens: {
-          accessToken: tokenPair.accessToken,
-          refreshToken: tokenPair.refreshToken,
-          expiresIn: tokenPair.expiresIn,
-        },
+        // MCP-specific information
+        mcp: {
+          serverUrl: "http://localhost:3000/mcp",
+          instructions: "Use the access_token in the Authorization header when connecting to the MCP server"
+        }
       });
     } catch (error) {
       logger.error("OAuth callback error", { error });
@@ -219,19 +250,4 @@ export class OAuthHandlers {
     });
   };
 
-  /**
-   * Build Google OAuth URL
-   */
-  private buildGoogleAuthUrl(): string {
-    const params = new URLSearchParams({
-      client_id: this.config.google.clientId,
-      redirect_uri: this.config.google.callbackUrl,
-      response_type: "code",
-      scope: "openid email profile",
-      access_type: "offline",
-      prompt: "consent",
-    });
-
-    return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
-  }
 }

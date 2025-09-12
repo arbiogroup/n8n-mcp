@@ -619,13 +619,17 @@ export class SingleSessionHTTPServer {
     passport.use(googleStrategy);
 
     // Serialize/deserialize user for session
-    passport.serializeUser((user: any, done) => {
-      done(null, user);
-    });
+    passport.serializeUser(
+      (user: any, done: (err: any, user?: any) => void) => {
+        done(null, user);
+      }
+    );
 
-    passport.deserializeUser((user: any, done) => {
-      done(null, user);
-    });
+    passport.deserializeUser(
+      (user: any, done: (err: any, user?: any) => void) => {
+        done(null, user);
+      }
+    );
 
     // Request logging middleware
     app.use((req, res, next) => {
@@ -758,6 +762,11 @@ export class SingleSessionHTTPServer {
     );
 
     // OAuth routes
+    // MCP connector expects /authorize endpoint
+    app.get("/authorize", (req, res) => {
+      res.redirect("/auth/google");
+    });
+
     app.get(
       "/auth/google",
       passport.authenticate("google", { scope: ["openid", "email", "profile"] })
@@ -773,6 +782,19 @@ export class SingleSessionHTTPServer {
     app.post("/auth/refresh", this.oauthHandlers.refreshToken);
     app.post("/auth/logout", this.oauthHandlers.logout);
     app.get("/auth/config", this.oauthHandlers.getConfig);
+    
+    // OAuth error page
+    app.get("/auth/error", (req, res) => {
+      res.status(401).json({
+        success: false,
+        error: {
+          code: "AUTHENTICATION_FAILED",
+          message: "OAuth authentication failed. Please try again.",
+        },
+        timestamp: new Date().toISOString(),
+      });
+    });
+
 
     // MCP information endpoint (no auth required for discovery) and SSE support
     app.get("/mcp", async (req, res) => {
