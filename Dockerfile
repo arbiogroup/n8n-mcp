@@ -10,10 +10,10 @@ COPY tsconfig*.json ./
 
 # Create minimal package.json and install ONLY build dependencies
 RUN --mount=type=cache,target=/root/.npm \
-    echo '{}' > package.json && \
-    npm install --no-save typescript@^5.8.3 @types/node@^22.15.30 @types/express@^5.0.3 \
-        @modelcontextprotocol/sdk@^1.12.1 dotenv@^16.5.0 express@^5.1.0 axios@^1.10.0 \
-        n8n-workflow@^1.96.0 uuid@^11.0.5 @types/uuid@^10.0.0
+  echo '{}' > package.json && \
+  npm install --no-save typescript@^5.8.3 @types/node@^22.15.30 @types/express@^5.0.3 \
+  @modelcontextprotocol/sdk@^1.12.1 dotenv@^16.5.0 express@^5.1.0 axios@^1.10.0 \
+  n8n-workflow@^1.96.0 uuid@^11.0.5 @types/uuid@^10.0.0
 
 # Copy source and build
 COPY src ./src
@@ -27,14 +27,14 @@ WORKDIR /app
 
 # Install only essential runtime tools
 RUN apk add --no-cache curl su-exec && \
-    rm -rf /var/cache/apk/*
+  rm -rf /var/cache/apk/*
 
 # Copy runtime-only package.json
 COPY package.runtime.json package.json
 
 # Install runtime dependencies with cache mount
 RUN --mount=type=cache,target=/root/.npm \
-    npm install --production --no-audit --no-fund
+  npm install --production --no-audit --no-fund
 
 # Copy built application
 COPY --from=builder /app/dist ./dist
@@ -60,17 +60,20 @@ LABEL org.opencontainers.image.title="n8n-mcp"
 # Create non-root user with unpredictable UID/GID
 # Using a hash of the build time to generate unpredictable IDs
 RUN BUILD_HASH=$(date +%s | sha256sum | head -c 8) && \
-    UID=$((10000 + 0x${BUILD_HASH} % 50000)) && \
-    GID=$((10000 + 0x${BUILD_HASH} % 50000)) && \
-    addgroup -g ${GID} -S nodejs && \
-    adduser -S nodejs -u ${UID} -G nodejs && \
-    chown -R nodejs:nodejs /app
+  UID=$((10000 + 0x${BUILD_HASH} % 50000)) && \
+  GID=$((10000 + 0x${BUILD_HASH} % 50000)) && \
+  addgroup -g ${GID} -S nodejs && \
+  adduser -S nodejs -u ${UID} -G nodejs && \
+  chown -R nodejs:nodejs /app
 
 # Switch to non-root user
 USER nodejs
 
 # Set Docker environment flag
 ENV IS_DOCKER=true
+ENV MCP_MODE=http
+ENV USE_FIXED_HTTP=true
+ENV N8N_API_URL=https://constischroeder.app.n8n.cloud
 
 # Expose HTTP port
 EXPOSE 3000
@@ -84,4 +87,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 
 # Optimized entrypoint
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["node", "dist/mcp/index.js"]
+# CMD ["node" "dist/mcp/index.js" "--http"]

@@ -1,0 +1,52 @@
+{
+  "family": "arbio-n8n-mcp",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::785747132622:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "cpu": 0,
+      "environment": [],
+      "environmentFiles": [],
+      "essential": true,
+      "image": "785747132622.dkr.ecr.eu-central-1.amazonaws.com/arbio/n8n-mcp:latest",
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/arbio-n8n-mcp",
+          "awslogs-create-group": "true",
+          "awslogs-region": "eu-central-1",
+          "awslogs-stream-prefix": "ecs"
+        },
+        "secretOptions": []
+      },
+      "mountPoints": [],
+      "name": "arbio-n8n-mcp",
+      "portMappings": [
+        {
+          "appProtocol": "http",
+          "containerPort": 3000,
+          "hostPort": 3000,
+          "name": "arbio-n8n-mcp-3000-tcp",
+          "protocol": "tcp"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "AUTH_TOKEN",
+          "valueFrom": "arn:aws:secretsmanager:eu-central-1:785747132622:secret:arbio/flow/AUTH_TOKEN-HoSfgx"
+        },
+
+        {
+          "name": "N8N_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:eu-central-1:785747132622:secret:arbio/flow/N8N_API_KEY-NGLapS"
+        }
+      ],
+      "systemControls": [],
+      "ulimits": [],
+      "volumesFrom": []
+    }
+  ]
+}
