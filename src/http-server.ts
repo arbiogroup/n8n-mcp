@@ -140,13 +140,15 @@ export async function startFixedHTTPServer() {
   passport.use(googleStrategy);
 
   // Serialize/deserialize user for session
-  passport.serializeUser((user: any, done) => {
+  passport.serializeUser((user: any, done: (err: any, user?: any) => void) => {
     done(null, user);
   });
 
-  passport.deserializeUser((user: any, done) => {
-    done(null, user);
-  });
+  passport.deserializeUser(
+    (user: any, done: (err: any, user?: any) => void) => {
+      done(null, user);
+    }
+  );
 
   // Request logging
   app.use((req, res, next) => {

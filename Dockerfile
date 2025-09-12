@@ -13,7 +13,10 @@ RUN --mount=type=cache,target=/root/.npm \
   echo '{}' > package.json && \
   npm install --no-save typescript@^5.8.3 @types/node@^22.15.30 @types/express@^5.0.3 \
   @modelcontextprotocol/sdk@^1.12.1 dotenv@^16.5.0 express@^5.1.0 axios@^1.10.0 \
-  n8n-workflow@^1.96.0 uuid@^11.0.5 @types/uuid@^10.0.0
+  n8n-workflow@^1.96.0 uuid@^11.0.5 @types/uuid@^10.0.0 \
+  express-session@^1.18.2 passport@^0.7.0 passport-google-oauth20@^2.0.0 \
+  jsonwebtoken@^9.0.2 @types/express-session@^1.18.0 @types/passport@^1.0.16 \
+  @types/passport-google-oauth20@^2.0.14 @types/jsonwebtoken@^9.0.7
 
 # Copy source and build
 COPY src ./src
@@ -25,8 +28,8 @@ RUN npx tsc -p tsconfig.build.json
 FROM node:22-alpine AS runtime
 WORKDIR /app
 
-# Install only essential runtime tools
-RUN apk add --no-cache curl su-exec && \
+# Install essential runtime tools including AWS CLI and jq for secrets management
+RUN apk add --no-cache curl su-exec aws-cli jq && \
   rm -rf /var/cache/apk/*
 
 # Copy runtime-only package.json
@@ -43,7 +46,6 @@ COPY --from=builder /app/dist ./dist
 # Cache bust: 2025-07-06-trigger-fix-v3 - includes is_trigger=true for webhook,cron,interval,emailReadImap
 COPY data/nodes.db ./data/
 COPY src/database/schema-optimized.sql ./src/database/
-COPY .env.example ./
 
 # Copy entrypoint script, config parser, and n8n-mcp command
 COPY docker/docker-entrypoint.sh /usr/local/bin/
@@ -74,6 +76,22 @@ ENV IS_DOCKER=true
 ENV MCP_MODE=http
 ENV USE_FIXED_HTTP=true
 ENV N8N_API_URL=https://constischroeder.app.n8n.cloud
+
+# Environment configuration
+# 
+# DEVELOPMENT MODE (default):
+#   - Uses .env file for environment variables
+#   - Set NODE_ENV=development (default)
+#
+# PRODUCTION MODE:
+#   - Set NODE_ENV=production
+#   - Set AWS_SECRETS_MANAGER_SECRET_NAME to your AWS secret name
+#   - The container will load secrets from AWS Secrets Manager
+#   - Falls back to .env file if AWS secrets fail to load
+#
+# Example production usage:
+#   docker run -e NODE_ENV=production -e AWS_SECRETS_MANAGER_SECRET_NAME=myapp/secrets n8n-mcp-env
+ENV NODE_ENV=development
 
 # Expose HTTP port
 EXPOSE 3000
