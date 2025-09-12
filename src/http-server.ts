@@ -140,13 +140,15 @@ export async function startFixedHTTPServer() {
   passport.use(googleStrategy);
 
   // Serialize/deserialize user for session
-  passport.serializeUser((user: any, done) => {
+  passport.serializeUser((user: any, done: (err: any, user?: any) => void) => {
     done(null, user);
   });
 
-  passport.deserializeUser((user: any, done) => {
-    done(null, user);
-  });
+  passport.deserializeUser(
+    (user: any, done: (err: any, user?: any) => void) => {
+      done(null, user);
+    }
+  );
 
   // Request logging
   app.use((req, res, next) => {
@@ -260,6 +262,11 @@ export async function startFixedHTTPServer() {
   });
 
   // OAuth routes
+  // MCP connector expects /authorize endpoint
+  app.get("/authorize", (req, res) => {
+    res.redirect("/auth/google");
+  });
+
   app.get(
     "/auth/google",
     passport.authenticate("google", { scope: ["openid", "email", "profile"] })
@@ -275,6 +282,18 @@ export async function startFixedHTTPServer() {
   app.post("/auth/refresh", oauthHandlers.refreshToken);
   app.post("/auth/logout", oauthHandlers.logout);
   app.get("/auth/config", oauthHandlers.getConfig);
+  
+  // OAuth error page
+  app.get("/auth/error", (req, res) => {
+    res.status(401).json({
+      success: false,
+      error: {
+        code: "AUTHENTICATION_FAILED",
+        message: "OAuth authentication failed. Please try again.",
+      },
+      timestamp: new Date().toISOString(),
+    });
+  });
 
   // OAuth error handling middleware
   app.use("/auth", OAuthErrorHandler.handleNotFound);

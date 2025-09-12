@@ -9,7 +9,11 @@
     "dotenv": "^16.5.0",
     "sql.js": "^1.13.0",
     "uuid": "^10.0.0",
-    "axios": "^1.7.7"
+    "axios": "^1.7.7",
+    "express-session": "^1.18.2",
+    "passport": "^0.7.0",
+    "passport-google-oauth20": "^2.0.0",
+    "jsonwebtoken": "^9.0.2"
   },
   "engines": {
     "node": ">=16.0.0"

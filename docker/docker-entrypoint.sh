@@ -1,27 +1,48 @@
 #!/bin/sh
 set -e
 
+# Helper function for safe logging (prevents stdio mode corruption)
+log_message() {
+    [ "$MCP_MODE" != "stdio" ] && echo "$@"
+}
+
 # Load configuration from JSON file if it exists
 if [ -f "/app/config.json" ] && [ -f "/app/docker/parse-config.js" ]; then
     # Use Node.js to generate shell-safe export commands
     eval $(node /app/docker/parse-config.js /app/config.json)
 fi
 
-# Helper function for safe logging (prevents stdio mode corruption)
-log_message() {
-    [ "$MCP_MODE" != "stdio" ] && echo "$@"
-}
-
-# Environment variable validation
-if [ "$MCP_MODE" = "http" ] && [ -z "$AUTH_TOKEN" ] && [ -z "$AUTH_TOKEN_FILE" ]; then
-    log_message "ERROR: AUTH_TOKEN or AUTH_TOKEN_FILE is required for HTTP mode" >&2
-    exit 1
+# Load AWS Secrets Manager secrets for production
+if [ "$NODE_ENV" = "production" ] && [ -n "$AWS_SECRETS_MANAGER_SECRET_NAME" ]; then
+    log_message "Loading secrets from AWS Secrets Manager..."
+    
+    # Check if AWS CLI is available
+    if command -v aws >/dev/null 2>&1; then
+        # Load secrets from AWS Secrets Manager
+        SECRETS_JSON=$(aws secretsmanager get-secret-value --secret-id "$AWS_SECRETS_MANAGER_SECRET_NAME" --query SecretString --output text 2>/dev/null || echo "{}")
+        
+        if [ "$SECRETS_JSON" != "{}" ]; then
+            # Parse and export secrets
+            echo "$SECRETS_JSON" | jq -r 'to_entries[] | "export \(.key)=\(.value)"' 2>/dev/null | while read -r line; do
+                eval "$line"
+            done
+            log_message "AWS secrets loaded successfully"
+        else
+            log_message "WARNING: Failed to load AWS secrets, falling back to .env file"
+        fi
+    else
+        log_message "WARNING: AWS CLI not available, falling back to .env file"
+    fi
 fi
 
-# Validate AUTH_TOKEN_FILE if provided
-if [ -n "$AUTH_TOKEN_FILE" ] && [ ! -f "$AUTH_TOKEN_FILE" ]; then
-    log_message "ERROR: AUTH_TOKEN_FILE specified but file not found: $AUTH_TOKEN_FILE" >&2
-    exit 1
+# Load .env file for local development or as fallback
+if [ -f "/app/.env" ]; then
+    log_message "Loading environment variables from .env file..."
+    # Use a more robust method to load .env file
+    set -a  # automatically export all variables
+    . /app/.env
+    set +a  # stop automatically exporting
+    log_message "Environment variables loaded from .env file"
 fi
 
 # Database path configuration - respect NODE_DB_PATH if set
