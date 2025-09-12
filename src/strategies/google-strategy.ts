@@ -2,6 +2,9 @@ import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import { logger } from "../utils/logger";
 import { OAuthConfig, GoogleUser, validateGoogleUser } from "../config/oauth";
 
+// Type definitions for Passport callbacks
+type PassportDoneCallback = (error: any, user?: any) => void;
+
 export function createGoogleStrategy(config: OAuthConfig) {
   return new GoogleStrategy(
     {
@@ -10,7 +13,12 @@ export function createGoogleStrategy(config: OAuthConfig) {
       callbackURL: config.google.callbackUrl,
       scope: ["openid", "email", "profile"],
     },
-    async (accessToken, refreshToken, profile, done) => {
+    async (
+      accessToken: string,
+      refreshToken: string,
+      profile: any,
+      done: PassportDoneCallback
+    ) => {
       try {
         logger.info("Google OAuth strategy callback", {
           profileId: profile.id,
@@ -68,7 +76,12 @@ export function createGoogleStrategyWithTokens(config: OAuthConfig) {
       callbackURL: config.google.callbackUrl,
       scope: ["openid", "email", "profile"],
     },
-    async (accessToken, refreshToken, profile, done) => {
+    async (
+      accessToken: string,
+      refreshToken: string,
+      profile: any,
+      done: PassportDoneCallback
+    ) => {
       try {
         logger.info("Google OAuth strategy callback with tokens", {
           profileId: profile.id,

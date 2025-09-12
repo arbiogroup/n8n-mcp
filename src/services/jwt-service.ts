@@ -103,7 +103,9 @@ export class JWTService {
       } else if (error instanceof jwt.JsonWebTokenError) {
         logger.debug("Invalid token", { error: error.message });
       } else {
-        logger.error("Token verification error", { error });
+        logger.error("Token verification error", {
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
       return null;
     }

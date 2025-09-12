@@ -3,11 +3,13 @@ node_modules
 npm-debug.log
 .git
 .gitignore
-.env
+# Exclude .env files in production, but allow for local development
+# .env files will be copied explicitly in Dockerfile for local dev
 .env.local
-# Exclude all .env.* files except .env.example
+# Exclude all .env.* files except .env.example and .env
 .env.*
 !.env.example
+!.env
 # Keep nodes.db but exclude other database files
 data/*.db
 data/*.db-*
