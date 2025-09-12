@@ -48,15 +48,12 @@ OAUTH_REQUIRE_DOMAIN_VERIFICATION=true
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
 2. Create new project or select existing
 3. Enable Google+ API (for user profile information)
-4. Go to "Credentials" → "Create Credentials" → "OAuth 2.0 Client IDs"
-5. Configure OAuth consent screen:
-   - Choose "External" for testing or "Internal" for Google Workspace
-   - Fill in required fields (app name, user support email, etc.)
-6. Create OAuth 2.0 credentials:
+4. Go to "Credentials" → "Create Credentials" → "OAuth2 API
+5. Create OAuth 2.0 credentials:
    - Application type: Web application
    - Authorized redirect URIs: `http://localhost:3000/auth/google/callback`
    - Authorized JavaScript origins: `http://localhost:3000`
-7. Download credentials and update environment variables
+6. Download credentials and update environment variables
 
 ## Phase 2: Core OAuth Implementation
 
