@@ -619,13 +619,17 @@ export class SingleSessionHTTPServer {
     passport.use(googleStrategy);
 
     // Serialize/deserialize user for session
-    passport.serializeUser((user: any, done) => {
-      done(null, user);
-    });
+    passport.serializeUser(
+      (user: any, done: (err: any, user?: any) => void) => {
+        done(null, user);
+      }
+    );
 
-    passport.deserializeUser((user: any, done) => {
-      done(null, user);
-    });
+    passport.deserializeUser(
+      (user: any, done: (err: any, user?: any) => void) => {
+        done(null, user);
+      }
+    );
 
     // Request logging middleware
     app.use((req, res, next) => {
