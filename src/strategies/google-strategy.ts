@@ -12,6 +12,8 @@ export function createGoogleStrategy(config: OAuthConfig) {
       clientSecret: config.google.clientSecret,
       callbackURL: config.google.callbackUrl,
       scope: ["openid", "email", "profile"],
+      // Enable state parameter for CSRF protection
+      passReqToCallback: false,
     },
     async (
       accessToken: string,

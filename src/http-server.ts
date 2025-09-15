@@ -31,6 +31,9 @@ import session from "express-session";
 import passport from "passport";
 import { createGoogleStrategy } from "./strategies/google-strategy";
 import { OAuthErrorHandler } from "./middleware/error-handler";
+import { MCPOAuthProxy } from "./mcp/oauth-proxy";
+import { MCPConnectionWizard } from "./mcp/connection-wizard";
+import { ZeroCopyOAuth } from "./mcp/zero-copy-oauth";
 
 dotenv.config();
 
@@ -39,6 +42,9 @@ let oauthConfig: any;
 let jwtService: JWTService;
 let oauthMiddleware: OAuthMiddleware;
 let oauthHandlers: OAuthHandlers;
+let mcpOAuthProxy: MCPOAuthProxy;
+let connectionWizard: MCPConnectionWizard;
+let zeroCopyOAuth: ZeroCopyOAuth;
 
 /**
  * Initialize OAuth configuration and services
@@ -49,6 +55,9 @@ function initializeOAuth() {
     jwtService = new JWTService(oauthConfig);
     oauthMiddleware = new OAuthMiddleware(jwtService);
     oauthHandlers = new OAuthHandlers(jwtService, oauthConfig);
+    mcpOAuthProxy = new MCPOAuthProxy(jwtService, oauthConfig);
+    connectionWizard = new MCPConnectionWizard("http://localhost:3000"); // Will be updated with actual URL
+    zeroCopyOAuth = new ZeroCopyOAuth(jwtService, oauthConfig);
 
     logger.info("OAuth system initialized successfully");
   } catch (error) {
@@ -164,8 +173,132 @@ export async function startFixedHTTPServer() {
   const mcpServer = new N8NDocumentationMCPServer();
   logger.info("Created persistent MCP server instance");
 
-  // Root endpoint with API information
+  // Simple landing page for zero-copy OAuth
   app.get("/", (req, res) => {
+    res.send(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>n8n MCP Server - Zero Copy OAuth</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            padding: 40px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        .title {
+            color: #2d3748;
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            color: #718096;
+            font-size: 18px;
+            margin-bottom: 30px;
+        }
+        .description {
+            color: #4a5568;
+            font-size: 16px;
+            line-height: 1.6;
+            margin-bottom: 40px;
+        }
+        .btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 8px;
+            font-size: 18px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            transition: all 0.2s;
+            margin: 10px;
+        }
+        .btn:hover {
+            background: #5a67d8;
+            transform: translateY(-2px);
+        }
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin: 40px 0;
+        }
+        .feature {
+            padding: 20px;
+            background: #f7fafc;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .feature-icon {
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+        .feature-title {
+            font-weight: 600;
+            color: #2d3748;
+            margin-bottom: 5px;
+        }
+        .feature-desc {
+            color: #718096;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="title">🚀 n8n MCP Server</h1>
+        <p class="subtitle">Zero Copy-Paste OAuth Authentication</p>
+        
+        <p class="description">
+            Connect your MCP client to n8n documentation and workflow management tools 
+            with just one click. No manual configuration, no copy-pasting tokens - 
+            just authenticate and you're connected!
+        </p>
+
+        <div class="features">
+            <div class="feature">
+                <div class="feature-icon">🔐</div>
+                <div class="feature-title">One-Click Auth</div>
+                <div class="feature-desc">Login with Google once</div>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">🤖</div>
+                <div class="feature-title">Auto-Configure</div>
+                <div class="feature-desc">Automatically detects your MCP client</div>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">⚡</div>
+                <div class="feature-title">Zero Setup</div>
+                <div class="feature-desc">No manual configuration needed</div>
+            </div>
+        </div>
+
+        <a href="/connect" class="btn">Connect Your MCP Client</a>
+        <a href="/health" class="btn" style="background: #e2e8f0; color: #4a5568;">View API Status</a>
+    </div>
+</body>
+</html>`);
+  });
+
+  // Root endpoint with API information (for developers)
+  app.get("/api", (req, res) => {
     const port = parseInt(process.env.PORT || "3000");
     const host = process.env.HOST || "0.0.0.0";
     const baseUrl = detectBaseUrl(req, host, port);
@@ -199,6 +332,13 @@ export async function startFixedHTTPServer() {
           refresh: "/auth/refresh",
           logout: "/auth/logout",
         },
+        mcp_oauth_proxy: {
+          register: "/oauth/register",
+          authorize: "/oauth/authorize", 
+          token: "/oauth/token",
+          discover: "/oauth/discover",
+        },
+        zero_copy_oauth: "/connect",
       },
       documentation: "https://github.com/czlonkowski/n8n-mcp",
     });
@@ -261,12 +401,10 @@ export async function startFixedHTTPServer() {
     }
   });
 
-  // OAuth routes
-  // MCP connector expects /authorize endpoint
-  app.get("/authorize", (req, res) => {
-    res.redirect("/auth/google");
-  });
-
+  // Zero Copy-Paste OAuth routes
+  app.get("/connect", zeroCopyOAuth.startOAuth);
+  app.get("/authorize", zeroCopyOAuth.startOAuth);
+  
   app.get(
     "/auth/google",
     passport.authenticate("google", { scope: ["openid", "email", "profile"] })
@@ -275,13 +413,27 @@ export async function startFixedHTTPServer() {
   app.get(
     "/auth/google/callback",
     passport.authenticate("google", { failureRedirect: "/auth/error" }),
-    oauthHandlers.handleGoogleCallback
+    zeroCopyOAuth.handleCallback
   );
 
   app.get("/auth/verify", oauthHandlers.verifyToken);
   app.post("/auth/refresh", oauthHandlers.refreshToken);
   app.post("/auth/logout", oauthHandlers.logout);
   app.get("/auth/config", oauthHandlers.getConfig);
+
+  // MCP OAuth Proxy routes (RFC 7591 Dynamic Client Registration)
+  app.post("/oauth/register", mcpOAuthProxy.registerClient);
+  app.get("/oauth/authorize", mcpOAuthProxy.authorize);
+  app.post("/oauth/token", mcpOAuthProxy.token);
+  app.get("/oauth/discover", mcpOAuthProxy.discover);
+
+  // MCP Connection Wizard routes
+  app.get("/mcp/connect", connectionWizard.renderWizard);
+  app.post("/mcp/connect/select", connectionWizard.selectClient);
+  app.get("/mcp/connect/claude-desktop", connectionWizard.claudeDesktopFlow);
+  app.get("/mcp/connect/windsurf", connectionWizard.windsurfFlow);
+  app.get("/mcp/connect/custom", connectionWizard.customClientFlow);
+  app.get("/mcp/discover", mcpOAuthProxy.discover);
   
   // OAuth error page
   app.get("/auth/error", (req, res) => {
