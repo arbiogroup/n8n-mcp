@@ -9,7 +9,31 @@
     {
       "cpu": 0,
       "environment": [],
-      "environmentFiles": [],
+      "environmentFiles": [
+        {
+          "name": "GOOGLE_CALLBACK_URL",
+          "value": "https://flow.arbio.io/auth/google/callback"
+        },{
+          "name": "OAUTH_REDIRECT_URI",
+          "value": "https://flow.arbio.io/auth/google/callback"
+        },
+        {
+          "name": "JWT_REFRESH_EXPIRES_IN",
+          "value": "7d"
+        },
+        {
+          "name": "OAUTH_DOMAIN_RESTRICTION",
+          "value": "arbio-group.com"
+        },
+        {
+          "name": "JWT_EXPIRES_IN",
+          "value": "1h"
+        },
+        {
+          "name": "OAUTH_REQUIRE_DOMAIN_VERIFICATION",
+          "value": "true"
+        }
+      ],
       "essential": true,
       "image": "785747132622.dkr.ecr.eu-central-1.amazonaws.com/arbio/n8n-mcp:latest",
       "logConfiguration": {
@@ -35,13 +59,24 @@
       ],
       "secrets": [
         {
-          "name": "AUTH_TOKEN",
-          "valueFrom": "arn:aws:secretsmanager:eu-central-1:785747132622:secret:arbio/flow/AUTH_TOKEN-HoSfgx"
-        },
-
-        {
           "name": "N8N_API_KEY",
           "valueFrom": "arn:aws:secretsmanager:eu-central-1:785747132622:secret:arbio/flow/N8N_API_KEY-NGLapS"
+        },
+        {
+          "name": "GOOGLE_CLIENT_ID",
+          "valueFrom": "arn:aws:secretsmanager:eu-central-1:785747132622:secret:arbio/flow/GOOGLE_CLIENT_ID-RYEZMb"
+        },
+        {
+          "name": "GOOGLE_CLIENT_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:eu-central-1:785747132622:secret:arbio/flow/GOOGLE_CLIENT_SECRET-ZxJu5p"
+        },
+        {
+          "name": "JWT_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:eu-central-1:785747132622:secret:arbio/flow/JWT_SECRET-rhjnZL"
+        },
+        {
+          "name": "SESSION_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:eu-central-1:785747132622:secret:arbio/flow/SESSION_SECRET-CJqDtY"
         }
       ],
       "systemControls": [],

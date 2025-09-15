@@ -12,18 +12,6 @@ log_message() {
     [ "$MCP_MODE" != "stdio" ] && echo "$@"
 }
 
-# Environment variable validation
-if [ "$MCP_MODE" = "http" ] && [ -z "$AUTH_TOKEN" ] && [ -z "$AUTH_TOKEN_FILE" ]; then
-    log_message "ERROR: AUTH_TOKEN or AUTH_TOKEN_FILE is required for HTTP mode" >&2
-    exit 1
-fi
-
-# Validate AUTH_TOKEN_FILE if provided
-if [ -n "$AUTH_TOKEN_FILE" ] && [ ! -f "$AUTH_TOKEN_FILE" ]; then
-    log_message "ERROR: AUTH_TOKEN_FILE specified but file not found: $AUTH_TOKEN_FILE" >&2
-    exit 1
-fi
-
 # Database path configuration - respect NODE_DB_PATH if set
 if [ -n "$NODE_DB_PATH" ]; then
     # Basic validation - must end with .db
@@ -124,14 +112,7 @@ if [ "$(id -u)" = "0" ]; then
     # Export all needed environment variables
     export MCP_MODE="$MCP_MODE"
     export NODE_DB_PATH="$NODE_DB_PATH"
-    export AUTH_TOKEN="$AUTH_TOKEN"
-    export AUTH_TOKEN_FILE="$AUTH_TOKEN_FILE"
-    
-    # Ensure AUTH_TOKEN_FILE has restricted permissions for security
-    if [ -n "$AUTH_TOKEN_FILE" ] && [ -f "$AUTH_TOKEN_FILE" ]; then
-        chmod 600 "$AUTH_TOKEN_FILE" 2>/dev/null || true
-        chown nodejs:nodejs "$AUTH_TOKEN_FILE" 2>/dev/null || true
-    fi
+
     # Use exec with su-exec for proper signal handling (Alpine Linux)
     # su-exec advantages:
     # - Proper signal forwarding (critical for container shutdown)
