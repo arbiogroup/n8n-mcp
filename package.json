@@ -129,13 +129,16 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.13.2",
     "@n8n/n8n-nodes-langchain": "^1.109.1",
+    "@types/express-session": "^1.18.2",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
+    "express-session": "^1.18.2",
     "n8n": "^1.110.1",
     "n8n-core": "^1.109.0",
     "n8n-workflow": "^1.107.0",
     "sql.js": "^1.13.0",
-    "uuid": "^10.0.0"
+    "uuid": "^10.0.0",
+    "zod": "^3.25.76"
   },
   "optionalDependencies": {
     "@rollup/rollup-darwin-arm64": "^4.50.0",

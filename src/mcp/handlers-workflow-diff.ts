@@ -134,7 +134,7 @@ export async function handleUpdatePartialWorkflow(args: unknown): Promise<McpToo
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     

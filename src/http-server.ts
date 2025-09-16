@@ -4,6 +4,7 @@
  * This implementation ensures the transport is properly initialized before handling requests
  */
 import express from 'express';
+import session from 'express-session';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { n8nDocumentationToolsFinal } from './mcp/tools';
 import { n8nManagementTools } from './mcp/tools-n8n-manager';
@@ -11,6 +12,7 @@ import { N8NDocumentationMCPServer } from './mcp/server';
 import { logger } from './utils/logger';
 import { PROJECT_VERSION } from './utils/version';
 import { isN8nApiConfigured } from './config/n8n-api';
+import { getOAuthConfig } from './config/oauth';
 import dotenv from 'dotenv';
 import { readFileSync } from 'fs';
 import { getStartupBaseUrl, formatEndpointUrls, detectBaseUrl } from './utils/url-detector';
@@ -20,10 +22,29 @@ import {
   N8N_PROTOCOL_VERSION 
 } from './utils/protocol-version';
 
+// OAuth imports
+import { createDatabaseAdapter } from './database/database-adapter';
+import { OAuthRepository } from './repositories/oauth-repository';
+import { OAuthService } from './services/oauth-service';
+import { GoogleOAuthService } from './services/google-oauth-service';
+import { createOAuthMiddleware, createOptionalOAuthMiddleware } from './middleware/oauth-middleware';
+
+// Route imports
+import { createAuthorizeRouter } from './routes/oauth-authorize';
+import { createTokenRouter } from './routes/oauth-token';
+import { createDiscoveryRouter } from './routes/oauth-discovery';
+import { createClientManagementRouter } from './routes/oauth-clients';
+import { createGoogleOAuthRouter } from './routes/google-oauth';
+
 dotenv.config();
 
 let expressServer: any;
-let authToken: string | null = null;
+
+// OAuth services
+let oauthService: OAuthService | null = null;
+let googleOAuthService: GoogleOAuthService | null = null;
+let oauthMiddleware: any;
+let optionalOAuthMiddleware: any;
 
 /**
  * Load auth token from environment variable or file
@@ -53,44 +74,6 @@ export function loadAuthToken(): string | null {
 }
 
 /**
- * Validate required environment variables
- */
-function validateEnvironment() {
-  // Load auth token from env var or file
-  authToken = loadAuthToken();
-  
-  if (!authToken || authToken.trim() === '') {
-    logger.error('No authentication token found or token is empty');
-    console.error('ERROR: AUTH_TOKEN is required for HTTP mode and cannot be empty');
-    console.error('Set AUTH_TOKEN environment variable or AUTH_TOKEN_FILE pointing to a file containing the token');
-    console.error('Generate AUTH_TOKEN with: openssl rand -base64 32');
-    process.exit(1);
-  }
-  
-  // Update authToken to trimmed version
-  authToken = authToken.trim();
-  
-  if (authToken.length < 32) {
-    logger.warn('AUTH_TOKEN should be at least 32 characters for security');
-    console.warn('WARNING: AUTH_TOKEN should be at least 32 characters for security');
-  }
-  
-  // Check for default token and show prominent warnings
-  if (authToken === 'REPLACE_THIS_AUTH_TOKEN_32_CHARS_MIN_abcdefgh') {
-    logger.warn('⚠️ SECURITY WARNING: Using default AUTH_TOKEN - CHANGE IMMEDIATELY!');
-    logger.warn('Generate secure token with: openssl rand -base64 32');
-    
-    // Only show console warnings in HTTP mode
-    if (process.env.MCP_MODE === 'http') {
-      console.warn('\n⚠️  SECURITY WARNING ⚠️');
-      console.warn('Using default AUTH_TOKEN - CHANGE IMMEDIATELY!');
-      console.warn('Generate secure token: openssl rand -base64 32');
-      console.warn('Update via Railway dashboard environment variables\n');
-    }
-  }
-}
-
-/**
  * Graceful shutdown handler
  */
 async function shutdown() {
@@ -114,9 +97,44 @@ async function shutdown() {
 }
 
 export async function startFixedHTTPServer() {
-  validateEnvironment();
   
   const app = express();
+  
+  // Initialize OAuth services
+  try {
+    logger.info('Attempting to initialize OAuth services...');
+    const oauthConfig = getOAuthConfig();
+    logger.info('OAuth config loaded:', {
+      issuer: oauthConfig.OAUTH_ISSUER,
+      googleClientId: !!oauthConfig.GOOGLE_CLIENT_ID,
+      googleClientSecret: !!oauthConfig.GOOGLE_CLIENT_SECRET,
+      jwtSecret: !!oauthConfig.JWT_SECRET,
+      domainRestriction: oauthConfig.OAUTH_DOMAIN_RESTRICTION
+    });
+    
+    const dbAdapter = await createDatabaseAdapter('./data/nodes.db');
+    logger.info('Database adapter created successfully');
+    
+    const oauthRepository = new OAuthRepository(dbAdapter);
+    logger.info('OAuth repository created successfully');
+    
+    oauthService = new OAuthService(oauthRepository);
+    googleOAuthService = new GoogleOAuthService();
+    logger.info('OAuth services created successfully');
+    
+    // Initialize OAuth middleware
+    oauthMiddleware = createOAuthMiddleware(oauthService);
+    optionalOAuthMiddleware = createOptionalOAuthMiddleware(oauthService);
+    logger.info('OAuth middleware created successfully');
+    
+    logger.info('✅ OAuth 2.1 services initialized successfully');
+  } catch (error) {
+    logger.error('❌ Failed to initialize OAuth services:', error);
+    console.error('OAuth initialization failed:', error);
+    // Continue without OAuth if initialization fails
+    oauthService = null;
+    googleOAuthService = null;
+  }
   
   // Configure trust proxy for correct IP logging behind reverse proxies
   const trustProxy = process.env.TRUST_PROXY ? Number(process.env.TRUST_PROXY) : 0;
@@ -125,7 +143,33 @@ export async function startFixedHTTPServer() {
     logger.info(`Trust proxy enabled with ${trustProxy} hop(s)`);
   }
   
-  // CRITICAL: Don't use any body parser - StreamableHTTPServerTransport needs raw stream
+  // Session configuration for OAuth
+  if (oauthService) {
+    const oauthConfig = getOAuthConfig();
+    app.use(session({
+      secret: oauthConfig.JWT_SECRET || 'fallback-session-secret',
+      resave: false,
+      saveUninitialized: false,
+      cookie: {
+        secure: process.env.NODE_ENV === 'production',
+        httpOnly: true,
+        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+      },
+      name: 'n8n-mcp-session'
+    }));
+    
+    logger.info('Session middleware configured for OAuth');
+  }
+  
+  // CRITICAL: Don't use JSON body parser globally - StreamableHTTPServerTransport needs raw stream
+  // But we do need parsing for OAuth endpoints
+  app.use('/authorize', express.urlencoded({ extended: true }));
+  app.use('/oauth', express.urlencoded({ extended: true }));
+  
+  // OAuth token endpoints need both JSON and URL-encoded parsing
+  app.use('/token', express.json(), express.urlencoded({ extended: true }));
+  app.use('/revoke', express.json(), express.urlencoded({ extended: true }));
+  app.use('/introspect', express.json(), express.urlencoded({ extended: true }));
   
   // Security headers
   app.use((req, res, next) => {
@@ -156,7 +200,19 @@ export async function startFixedHTTPServer() {
     logger.info(`${req.method} ${req.path}`, {
       ip: req.ip,
       userAgent: req.get('user-agent'),
-      contentLength: req.get('content-length')
+      contentLength: req.get('content-length'),
+      contentType: req.get('content-type')
+    });
+    next();
+  });
+
+  // Debug middleware for OAuth endpoints
+  app.use(['/token', '/revoke', '/introspect', '/authorize'], (req, res, next) => {
+    logger.info(`OAuth endpoint hit: ${req.method} ${req.path}`, {
+      query: req.query,
+      hasBody: !!req.body,
+      bodyKeys: req.body ? Object.keys(req.body) : [],
+      contentType: req.get('content-type')
     });
     next();
   });
@@ -164,6 +220,36 @@ export async function startFixedHTTPServer() {
   // Create a single persistent MCP server instance
   const mcpServer = new N8NDocumentationMCPServer();
   logger.info('Created persistent MCP server instance');
+  
+  // Mount OAuth routes if services are available
+  if (oauthService && googleOAuthService) {
+    logger.info('🔧 Mounting OAuth routes...');
+    
+    // OAuth Discovery and OpenID Connect endpoints
+    app.use('/', createDiscoveryRouter());
+    logger.info('✅ Discovery routes mounted');
+    
+    // Google OAuth routes
+    app.use('/', createGoogleOAuthRouter(googleOAuthService));
+    logger.info('✅ Google OAuth routes mounted');
+    
+    // OAuth Authorization and Token endpoints (without /oauth prefix)
+    app.use('/', createAuthorizeRouter(oauthService, googleOAuthService));
+    logger.info('✅ Authorization routes mounted at /authorize');
+    
+    app.use('/', createTokenRouter(oauthService));
+    logger.info('✅ Token routes mounted at /token');
+    
+    // OAuth Client Management endpoints (keeping /oauth prefix for admin functions)
+    app.use('/oauth', createClientManagementRouter(oauthService));
+    logger.info('✅ Client management routes mounted at /oauth');
+    
+    logger.info('🎉 All OAuth 2.1 routes mounted successfully');
+  } else {
+    logger.warn('⚠️ OAuth services not available - routes not mounted');
+    logger.warn('⚠️ OAuth service exists:', !!oauthService);
+    logger.warn('⚠️ Google OAuth service exists:', !!googleOAuthService);
+  }
 
   // Root endpoint with API information
   app.get('/', (req, res) => {
@@ -172,10 +258,10 @@ export async function startFixedHTTPServer() {
     const baseUrl = detectBaseUrl(req, host, port);
     const endpoints = formatEndpointUrls(baseUrl);
     
-    res.json({
-      name: 'n8n Documentation MCP Server',
+    const responseData: any = {
+      name: 'n8n Documentation MCP Server with OAuth 2.1',
       version: PROJECT_VERSION,
-      description: 'Model Context Protocol server providing comprehensive n8n node documentation and workflow management',
+      description: 'Model Context Protocol server providing comprehensive n8n node documentation, workflow management, and OAuth 2.1 authentication',
       endpoints: {
         health: {
           url: endpoints.health,
@@ -189,12 +275,46 @@ export async function startFixedHTTPServer() {
         }
       },
       authentication: {
-        type: 'Bearer Token',
-        header: 'Authorization: Bearer <token>',
-        required_for: ['POST /mcp']
+        legacy: {
+          type: 'Bearer Token',
+          header: 'Authorization: Bearer <token>',
+          required_for: ['POST /mcp (fallback)']
+        }
       },
       documentation: 'https://github.com/czlonkowski/n8n-mcp'
-    });
+    };
+    
+    // Add OAuth endpoints if available
+    if (oauthService) {
+      responseData.endpoints.oauth = {
+        authorize: `${baseUrl}/authorize`,
+        token: `${baseUrl}/token`,
+        revoke: `${baseUrl}/revoke`,
+        introspect: `${baseUrl}/introspect`,
+        register: `${baseUrl}/oauth/register`,
+        discovery: `${baseUrl}/.well-known/oauth-authorization-server`
+      };
+      
+      responseData.endpoints.auth = {
+        google: `${baseUrl}/auth/google`,
+        callback: `${baseUrl}/auth/google/callback`,
+        user: `${baseUrl}/auth/user`,
+        logout: `${baseUrl}/auth/logout`
+      };
+      
+      responseData.endpoints.openid = {
+        userinfo: `${baseUrl}/oauth/userinfo`
+      };
+      
+      responseData.authentication.oauth2 = {
+        type: 'OAuth 2.1',
+        authorization_endpoint: `${baseUrl}/authorize`,
+        token_endpoint: `${baseUrl}/token`,
+        scopes: 'Any scopes accepted'
+      };
+    }
+    
+    res.json(responseData);
   });
 
   // Health check endpoint
@@ -263,60 +383,22 @@ export async function startFixedHTTPServer() {
   });
 
   // Main MCP endpoint - handle each request with custom transport handling
-  app.post('/mcp', async (req: express.Request, res: express.Response): Promise<void> => {
+  // Now supports both OAuth and legacy Bearer token authentication
+  app.post('/mcp', optionalOAuthMiddleware || ((req: any, res: any, next: any) => next()), async (req: express.Request, res: express.Response): Promise<void> => {
     const startTime = Date.now();
     
-    // Enhanced authentication check with specific logging
-    const authHeader = req.headers.authorization;
+    // Check if user is authenticated via OAuth
+    const isOAuthAuthenticated = (req as any).user && (req as any).user.isValid;
+    let authenticationMethod = 'none';
     
-    // Check if Authorization header is missing
-    if (!authHeader) {
-      logger.warn('Authentication failed: Missing Authorization header', { 
-        ip: req.ip,
-        userAgent: req.get('user-agent'),
-        reason: 'no_auth_header'
+    if (isOAuthAuthenticated) {
+      authenticationMethod = 'oauth';
+      logger.debug('MCP request authenticated via OAuth', {
+        user: (req as any).user.email,
+        clientId: (req as any).user.clientId
       });
-      res.status(401).json({ 
-        jsonrpc: '2.0',
-        error: {
-          code: -32001,
-          message: 'Unauthorized'
-        },
-        id: null
-      });
-      return;
-    }
-    
-    // Check if Authorization header has Bearer prefix
-    if (!authHeader.startsWith('Bearer ')) {
-      logger.warn('Authentication failed: Invalid Authorization header format (expected Bearer token)', { 
-        ip: req.ip,
-        userAgent: req.get('user-agent'),
-        reason: 'invalid_auth_format',
-        headerPrefix: authHeader.substring(0, Math.min(authHeader.length, 10)) + '...'  // Log first 10 chars for debugging
-      });
-      res.status(401).json({ 
-        jsonrpc: '2.0',
-        error: {
-          code: -32001,
-          message: 'Unauthorized'
-        },
-        id: null
-      });
-      return;
-    }
-    
-    // Extract token and trim whitespace
-    const token = authHeader.slice(7).trim();
-    
-    // Check if token matches
-    if (token !== authToken) {
-      logger.warn('Authentication failed: Invalid token', { 
-        ip: req.ip,
-        userAgent: req.get('user-agent'),
-        reason: 'invalid_token'
-      });
-      res.status(401).json({ 
+    } else {
+      res.status(401).json({
         jsonrpc: '2.0',
         error: {
           code: -32001,
@@ -441,7 +523,8 @@ export async function startFixedHTTPServer() {
           const duration = Date.now() - startTime;
           logger.info('MCP request completed', { 
             duration,
-            method: jsonRpcRequest.method 
+            method: jsonRpcRequest.method,
+            authMethod: authenticationMethod
           });
         } catch (error) {
           logger.error('Error processing request:', error);
@@ -514,16 +597,6 @@ export async function startFixedHTTPServer() {
     console.log(`Health check: ${endpoints.health}`);
     console.log(`MCP endpoint: ${endpoints.mcp}`);
     console.log('\nPress Ctrl+C to stop the server');
-    
-    // Start periodic warning timer if using default token
-    if (authToken === 'REPLACE_THIS_AUTH_TOKEN_32_CHARS_MIN_abcdefgh') {
-      setInterval(() => {
-        logger.warn('⚠️ Still using default AUTH_TOKEN - security risk!');
-        if (process.env.MCP_MODE === 'http') {
-          console.warn('⚠️ REMINDER: Still using default AUTH_TOKEN - please change it!');
-        }
-      }, 300000); // Every 5 minutes
-    }
     
     if (process.env.BASE_URL || process.env.PUBLIC_URL) {
       console.log(`\nPublic URL configured: ${baseUrl}`);

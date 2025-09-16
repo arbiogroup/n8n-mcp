@@ -64,7 +64,7 @@ function ensureApiConfigured(): N8nApiClient {
 const createWorkflowSchema = z.object({
   name: z.string(),
   nodes: z.array(z.any()),
-  connections: z.record(z.any()),
+  connections: z.record(z.string(), z.any()),
   settings: z.object({
     executionOrder: z.enum(['v0', 'v1']).optional(),
     timezone: z.string().optional(),
@@ -81,7 +81,7 @@ const updateWorkflowSchema = z.object({
   id: z.string(),
   name: z.string().optional(),
   nodes: z.array(z.any()).optional(),
-  connections: z.record(z.any()).optional(),
+  connections: z.record(z.string(), z.any()).optional(),
   settings: z.any().optional(),
 });
 
@@ -107,8 +107,8 @@ const validateWorkflowSchema = z.object({
 const triggerWebhookSchema = z.object({
   webhookUrl: z.string().url(),
   httpMethod: z.enum(['GET', 'POST', 'PUT', 'DELETE']).optional(),
-  data: z.record(z.unknown()).optional(),
-  headers: z.record(z.string()).optional(),
+  data: z.record(z.string(), z.unknown()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   waitForResponse: z.boolean().optional(),
 });
 
@@ -151,7 +151,7 @@ export async function handleCreateWorkflow(args: unknown): Promise<McpToolRespon
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -187,7 +187,7 @@ export async function handleGetWorkflow(args: unknown): Promise<McpToolResponse>
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -241,7 +241,7 @@ export async function handleGetWorkflowDetails(args: unknown): Promise<McpToolRe
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -294,7 +294,7 @@ export async function handleGetWorkflowStructure(args: unknown): Promise<McpTool
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -337,7 +337,7 @@ export async function handleGetWorkflowMinimal(args: unknown): Promise<McpToolRe
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -398,7 +398,7 @@ export async function handleUpdateWorkflow(args: unknown): Promise<McpToolRespon
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -434,7 +434,7 @@ export async function handleDeleteWorkflow(args: unknown): Promise<McpToolRespon
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -496,7 +496,7 @@ export async function handleListWorkflows(args: unknown): Promise<McpToolRespons
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -584,7 +584,7 @@ export async function handleValidateWorkflow(
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -630,7 +630,7 @@ export async function handleTriggerWebhookWorkflow(args: unknown): Promise<McpTo
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -669,7 +669,7 @@ export async function handleGetExecution(args: unknown): Promise<McpToolResponse
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -719,7 +719,7 @@ export async function handleListExecutions(args: unknown): Promise<McpToolRespon
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     
@@ -754,7 +754,7 @@ export async function handleDeleteExecution(args: unknown): Promise<McpToolRespo
       return {
         success: false,
         error: 'Invalid input',
-        details: { errors: error.errors }
+        details: { errors: error.issues }
       };
     }
     

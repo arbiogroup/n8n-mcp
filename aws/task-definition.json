@@ -8,12 +8,12 @@
   "containerDefinitions": [
     {
       "cpu": 0,
-      "environment": [],
-      "environmentFiles": [
+      "environment": [
         {
           "name": "GOOGLE_CALLBACK_URL",
           "value": "https://flow.arbio.io/auth/google/callback"
-        },{
+        },
+        {
           "name": "OAUTH_REDIRECT_URI",
           "value": "https://flow.arbio.io/auth/google/callback"
         },
@@ -77,6 +77,10 @@
         {
           "name": "SESSION_SECRET",
           "valueFrom": "arn:aws:secretsmanager:eu-central-1:785747132622:secret:arbio/flow/SESSION_SECRET-CJqDtY"
+        },
+        {
+          "name": "AUTH_TOKEN",
+          "valueFrom": "arn:aws:secretsmanager:eu-central-1:785747132622:secret:arbio/flow/FLOW_AUTH_TOKEN-Z2Zxx5"
         }
       ],
       "systemControls": [],
