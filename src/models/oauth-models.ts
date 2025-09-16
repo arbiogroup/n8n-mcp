@@ -54,14 +54,14 @@ export interface AuthorizeRequest {
 }
 
 export interface TokenRequest {
-  grant_type: string;
+  grant_type: string; // 'authorization_code' | 'refresh_token' | 'client_credentials'
   code?: string; // For authorization_code grant
-  redirect_uri?: string;
+  redirect_uri?: string; // For authorization_code grant
   client_id: string;
-  client_secret?: string;
-  code_verifier?: string; // For PKCE
+  client_secret?: string; // Required for confidential clients and client_credentials grant
+  code_verifier?: string; // For PKCE in authorization_code grant
   refresh_token?: string; // For refresh_token grant
-  scope?: string; // For refresh_token grant scope restriction
+  scope?: string; // For refresh_token grant scope restriction or client_credentials grant
 }
 
 export interface TokenResponse {
@@ -85,6 +85,7 @@ export interface ClientRegistrationRequest {
   grant_types?: string[];
   scope?: string;
   client_type?: 'public' | 'confidential';
+  client_id?: string; // For pre-defined clients like Claude AI
 }
 
 export interface ClientRegistrationResponse {

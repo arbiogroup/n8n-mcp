@@ -16,6 +16,15 @@ export function createDiscoveryRouter(): Router {
   router.get('/.well-known/oauth-authorization-server', (req: Request, res: Response) => {
     try {
       const baseUrl = config.OAUTH_ISSUER;
+      const mcpProtocolVersion = req.get('MCP-Protocol-Version');
+      
+      // Log MCP protocol version if provided
+      if (mcpProtocolVersion) {
+        logger.info('MCP OAuth discovery request', { 
+          mcpProtocolVersion,
+          userAgent: req.get('user-agent')
+        });
+      }
 
       const metadata = {
         // Core OAuth 2.1 metadata
@@ -25,7 +34,7 @@ export function createDiscoveryRouter(): Router {
         
         // Supported features
         response_types_supported: ['code'],
-        grant_types_supported: ['authorization_code', 'refresh_token'],
+        grant_types_supported: ['authorization_code', 'client_credentials', 'refresh_token'],
         code_challenge_methods_supported: ['S256'],
         
         // Authentication methods
@@ -38,13 +47,17 @@ export function createDiscoveryRouter(): Router {
         // Optional endpoints
         revocation_endpoint: `${baseUrl}/revoke`,
         introspection_endpoint: `${baseUrl}/introspect`,
-        registration_endpoint: `${baseUrl}/oauth/register`,
+        registration_endpoint: `${baseUrl}/register`,
+        
+        // Dynamic client registration support  
+        client_registration_endpoint: `${baseUrl}/register`,
+        client_registration_authn_methods_supported: ['none'], // Public registration
         
         // JWKS endpoint (for JWT token verification)
         jwks_uri: `${baseUrl}/.well-known/jwks.json`,
         
-        // Scopes - accepting any scopes
-        scopes_supported: [],
+        // Free scope mode - accept any scopes
+        scopes_supported: ['*'], // Indicates all scopes are supported
         
         // OAuth 2.1 specific features
         require_request_uri_registration: false,
@@ -149,8 +162,8 @@ export function createDiscoveryRouter(): Router {
         subject_types_supported: ['public'],
         id_token_signing_alg_values_supported: ['HS256'],
         
-        // Scopes - accepting any scopes (including OpenID Connect scopes)
-        scopes_supported: ['openid', 'profile', 'email'],
+        // Free scope mode - accept any scopes (including OpenID Connect scopes)
+        scopes_supported: ['*', 'openid', 'profile', 'email'], // Wildcard indicates all scopes supported
         
         // Claims
         claims_supported: [
@@ -168,7 +181,7 @@ export function createDiscoveryRouter(): Router {
         // Additional endpoints
         revocation_endpoint: `${baseUrl}/revoke`,
         introspection_endpoint: `${baseUrl}/introspect`,
-        registration_endpoint: `${baseUrl}/oauth/register`,
+        registration_endpoint: `${baseUrl}/register`,
         
         // PKCE support
         code_challenge_methods_supported: ['S256'],

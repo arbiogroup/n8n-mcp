@@ -38,6 +38,91 @@ interface AuthRequest extends Request {
   session: any & AuthSession;
 }
 
+/**
+ * Attempt automatic registration for known OAuth clients
+ */
+async function attemptAutoRegistration(clientId: string, redirectUri: string, oauthService: OAuthService): Promise<any> {
+  try {
+    logger.info('🤖 Starting auto-registration attempt', { clientId, redirectUri });
+    
+    // Check if it's Claude AI by client ID or redirect URI
+    const isClaudeAI = clientId === '992236964315-rpq06uolni85341iafnc51q4r6sogmd6.apps.googleusercontent.com' ||
+                       redirectUri?.includes('claude.ai');
+    
+    if (isClaudeAI) {
+      logger.info('🎯 Detected Claude AI - proceeding with auto-registration');
+      
+      const registrationData = {
+        client_name: 'Claude AI',
+        client_id: '992236964315-rpq06uolni85341iafnc51q4r6sogmd6.apps.googleusercontent.com',
+        redirect_uris: [
+          'https://claude.ai/api/mcp/auth_callback',
+          'https://claude.ai/oauth/callback',
+          redirectUri // Also include the actual redirect URI being used
+        ].filter((uri, index, array) => array.indexOf(uri) === index), // Remove duplicates
+        scope: '*', // Accept all scopes - no restrictions
+        client_type: 'public' as const
+      };
+      
+      logger.info('📋 Registration data prepared', { 
+        client_name: registrationData.client_name,
+        client_id: registrationData.client_id,
+        redirect_uris: registrationData.redirect_uris,
+        scope: registrationData.scope
+      });
+      
+      const registeredClient = await oauthService.registerClient(registrationData);
+      logger.info('✅ Claude AI auto-registered successfully', {
+        clientId: registeredClient.client_id,
+        name: registeredClient.client_name,
+        redirectUris: registeredClient.redirect_uris
+      });
+      
+      // Fetch the client from database to return
+      const fetchedClient = await oauthService.getClient(clientId);
+      if (fetchedClient) {
+        logger.info('✅ Auto-registered client verified in database', { 
+          id: fetchedClient.id,
+          name: fetchedClient.name 
+        });
+        return fetchedClient;
+      } else {
+        logger.error('❌ Auto-registered client not found in database after registration');
+        return null;
+      }
+    }
+    
+    // For any unknown client, attempt generic registration with the provided redirect URI
+    logger.info('🔧 Attempting generic auto-registration for unknown client');
+    
+    const genericRegistrationData = {
+      client_name: `Auto-registered Client (${clientId.substring(0, 8)})`,
+      client_id: clientId,
+      redirect_uris: [redirectUri],
+      scope: '*', // Accept all scopes
+      client_type: 'public' as const
+    };
+    
+    const registeredGenericClient = await oauthService.registerClient(genericRegistrationData);
+    logger.info('✅ Generic client auto-registered successfully', {
+      clientId: registeredGenericClient.client_id,
+      name: registeredGenericClient.client_name
+    });
+    
+    return await oauthService.getClient(clientId);
+    
+  } catch (error) {
+    logger.error('❌ Auto-registration failed with error:', {
+      error: error instanceof Error ? error.message : String(error),
+      clientId,
+      redirectUri,
+      stack: error instanceof Error ? error.stack : undefined
+    });
+  }
+  
+  return null;
+}
+
 export function createAuthorizeRouter(
   oauthService: OAuthService,
   googleOAuthService: GoogleOAuthService
@@ -117,6 +202,47 @@ export function createAuthorizeRouter(
 
       // Validate authorization request (client, redirect URI, scopes, PKCE)
       try {
+        logger.info('🔍 Looking up client in database', { client_id });
+        
+        // First, try to get the client
+        let client = await oauthService.getClient(client_id);
+        
+        if (client) {
+          logger.info('✅ Client found in database', { 
+            client_id: client.id, 
+            name: client.name,
+            redirectUris: client.redirectUris 
+          });
+        } else {
+          logger.warn('❌ Client not found in database, attempting auto-registration', { 
+            client_id, 
+            redirect_uri,
+            scope 
+          });
+          
+          // If client doesn't exist, try automatic registration for known clients
+          client = await attemptAutoRegistration(client_id, redirect_uri, oauthService);
+          
+          if (client) {
+            logger.info('✅ Client auto-registered successfully', { 
+              client_id: client.id, 
+              name: client.name 
+            });
+          } else {
+            logger.error('❌ Auto-registration failed for client', { client_id, redirect_uri });
+          }
+        }
+        
+        if (!client) {
+          const errorMsg = `Unknown client: ${client_id}`;
+          logger.error('❌ Client validation failed', { 
+            client_id, 
+            redirect_uri, 
+            error: errorMsg 
+          });
+          throw new InvalidClientError(errorMsg);
+        }
+        
         const authRequest = await oauthService.createAuthorizationRequest({
           clientId: client_id,
           redirectUri: redirect_uri,
@@ -289,6 +415,15 @@ export function createAuthorizeRouter(
       // Handle approval
       if (action === 'approve') {
         // Generate authorization code
+        logger.info('🔑 Generating authorization code', {
+          clientId: authRequest.client_id,
+          userEmail: user.email,
+          redirectUri: authRequest.redirect_uri,
+          scope: authRequest.scope,
+          hasCodeChallenge: !!authRequest.code_challenge,
+          codeChallengeMethod: authRequest.code_challenge_method
+        });
+        
         const code = await oauthService.createAuthorizationCode({
           clientId: authRequest.client_id,
           userEmail: user.email,
@@ -297,17 +432,37 @@ export function createAuthorizeRouter(
           codeChallenge: authRequest.code_challenge,
           codeChallengeMethod: authRequest.code_challenge_method
         });
+        
+        logger.info('✅ Authorization code generated successfully', {
+          codeLength: code?.length,
+          codePreview: code ? `${code.substring(0, 8)}...` : 'missing'
+        });
 
         // Create success redirect
         const successParams = createSuccessParams(code, authRequest.state);
         const redirectUrl = new URL(authRequest.redirect_uri);
         redirectUrl.search = successParams.toString();
 
+        const finalRedirectUrl = redirectUrl.toString();
+        
+        logger.info('✅ OAuth authorization approved - redirecting with authorization code', {
+          user: user.email,
+          client_id: authRequest.client_id,
+          redirect_uri: authRequest.redirect_uri,
+          state: authRequest.state,
+          code_length: code?.length,
+          code_preview: code ? `${code.substring(0, 8)}...` : 'missing',
+          finalRedirectUrl: finalRedirectUrl,
+          successParams: {
+            code: code ? `${code.substring(0, 8)}...` : 'missing',
+            state: authRequest.state || 'none'
+          }
+        });
 
         // Clear auth request from session (keep user for future requests)
         delete req.session.authRequest;
 
-        return res.redirect(redirectUrl.toString());
+        return res.redirect(finalRedirectUrl);
       }
 
       // Invalid action

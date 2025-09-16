@@ -96,6 +96,7 @@ async function shutdown() {
   }
 }
 
+
 export async function startFixedHTTPServer() {
   
   const app = express();
@@ -127,7 +128,7 @@ export async function startFixedHTTPServer() {
     optionalOAuthMiddleware = createOptionalOAuthMiddleware(oauthService);
     logger.info('OAuth middleware created successfully');
     
-    logger.info('✅ OAuth 2.1 services initialized successfully');
+    logger.info('✅ OAuth 2.1 services initialized successfully with dynamic client registration enabled');
   } catch (error) {
     logger.error('❌ Failed to initialize OAuth services:', error);
     console.error('OAuth initialization failed:', error);
@@ -162,14 +163,18 @@ export async function startFixedHTTPServer() {
   }
   
   // CRITICAL: Don't use JSON body parser globally - StreamableHTTPServerTransport needs raw stream
-  // But we do need parsing for OAuth endpoints
+  // Global JSON parsing for all routes (needed for OAuth registration)
+  app.use(express.json({ limit: '10mb' }));
+  
+  // OAuth endpoints also need URL-encoded parsing
   app.use('/authorize', express.urlencoded({ extended: true }));
   app.use('/oauth', express.urlencoded({ extended: true }));
+  app.use('/register', express.urlencoded({ extended: true }));
   
   // OAuth token endpoints need both JSON and URL-encoded parsing
-  app.use('/token', express.json(), express.urlencoded({ extended: true }));
-  app.use('/revoke', express.json(), express.urlencoded({ extended: true }));
-  app.use('/introspect', express.json(), express.urlencoded({ extended: true }));
+  app.use('/token', express.urlencoded({ extended: true }));
+  app.use('/revoke', express.urlencoded({ extended: true }));
+  app.use('/introspect', express.urlencoded({ extended: true }));
   
   // Security headers
   app.use((req, res, next) => {
@@ -240,9 +245,14 @@ export async function startFixedHTTPServer() {
     app.use('/', createTokenRouter(oauthService));
     logger.info('✅ Token routes mounted at /token');
     
-    // OAuth Client Management endpoints (keeping /oauth prefix for admin functions)
+    // Mount client registration at root level for MCP compliance
+    const clientRouter = createClientManagementRouter(oauthService);
+    app.use('/', clientRouter);
+    logger.info('✅ Client registration routes mounted at /register (MCP compliant)');
+    
+    // Keep admin endpoints at /oauth prefix for backward compatibility  
     app.use('/oauth', createClientManagementRouter(oauthService));
-    logger.info('✅ Client management routes mounted at /oauth');
+    logger.info('✅ Client management routes also mounted at /oauth (legacy)');
     
     logger.info('🎉 All OAuth 2.1 routes mounted successfully');
   } else {
@@ -255,13 +265,16 @@ export async function startFixedHTTPServer() {
   app.get('/', (req, res) => {
     const port = parseInt(process.env.PORT || '3000');
     const host = process.env.HOST || '0.0.0.0';
-    const baseUrl = detectBaseUrl(req, host, port);
+    
+    // Use OAuth issuer URL if available, otherwise detect from request
+    const oauthConfig = getOAuthConfig();
+    const baseUrl = oauthConfig.OAUTH_ISSUER || detectBaseUrl(req, host, port);
     const endpoints = formatEndpointUrls(baseUrl);
     
     const responseData: any = {
-      name: 'n8n Documentation MCP Server with OAuth 2.1',
+      name: 'n8n Documentation MCP Server with OAuth 2.1 - Free Scope',
       version: PROJECT_VERSION,
-      description: 'Model Context Protocol server providing comprehensive n8n node documentation, workflow management, and OAuth 2.1 authentication',
+      description: 'Model Context Protocol server with OAuth 2.1 authentication - Free scope policy allowing any client to register with any scopes',
       endpoints: {
         health: {
           url: endpoints.health,
@@ -291,8 +304,31 @@ export async function startFixedHTTPServer() {
         token: `${baseUrl}/token`,
         revoke: `${baseUrl}/revoke`,
         introspect: `${baseUrl}/introspect`,
-        register: `${baseUrl}/oauth/register`,
+        register: `${baseUrl}/register`,
         discovery: `${baseUrl}/.well-known/oauth-authorization-server`
+      };
+      
+      responseData.oauth_policy = {
+        scope_validation: 'disabled',
+        client_registration: 'completely open',
+        supported_scopes: '*',
+        dynamic_registration: true,
+        description: 'This server accepts ANY scopes from ANY client - completely free OAuth policy'
+      };
+      
+      responseData.mcp_compliance = {
+        specification_version: '2025-03-26',
+        oauth_2_1: true,
+        pkce_required: true,
+        dynamic_registration: true,
+        metadata_discovery: true,
+        third_party_auth: true,
+        compliant_endpoints: {
+          authorization: '/authorize',
+          token: '/token', 
+          registration: '/register',
+          metadata: '/.well-known/oauth-authorization-server'
+        }
       };
       
       responseData.endpoints.auth = {

@@ -58,8 +58,8 @@ export class OAuthService {
       const requestedScopes = request.scope ? parseScopes(request.scope) : ['mcp:read'];
       // Scope validation disabled - accept any scopes
 
-      // Generate client credentials
-      const clientId = generateClientId();
+      // Use provided client_id or generate new one
+      const clientId = request.client_id || generateClientId();
       const clientSecret = request.client_type === 'public' ? undefined : generateClientSecret();
 
       // Create client
@@ -90,7 +90,38 @@ export class OAuthService {
   }
 
   async getClient(clientId: string): Promise<OAuthClient | null> {
-    return this.repository.getClient(clientId);
+    let client = await this.repository.getClient(clientId);
+    
+    // If client doesn't exist and it's Claude AI, auto-register it
+    if (!client && clientId === '992236964315-rpq06uolni85341iafnc51q4r6sogmd6.apps.googleusercontent.com') {
+      logger.info('Auto-registering Claude AI client in getClient()');
+      try {
+        const registrationData = {
+          client_name: 'Claude AI',
+          client_id: clientId,
+          redirect_uris: [
+            'https://claude.ai/api/mcp/auth_callback',
+            'https://claude.ai/oauth/callback'
+          ],
+          scope: '*', // Accept all scopes - no restrictions
+          client_type: 'public' as const
+        };
+        
+        await this.registerClient(registrationData);
+        client = await this.repository.getClient(clientId);
+        
+        if (client) {
+          logger.info('✅ Claude AI auto-registered successfully in getClient()', {
+            clientId: client.id,
+            name: client.name
+          });
+        }
+      } catch (error) {
+        logger.warn('Auto-registration failed in getClient():', error);
+      }
+    }
+    
+    return client;
   }
 
   async updateClient(clientId: string, updates: Partial<Pick<OAuthClient, 'name' | 'redirectUris' | 'scope'>>): Promise<OAuthClient | null> {
@@ -282,6 +313,81 @@ export class OAuthService {
     }
   }
 
+  // Client Credentials Grant
+  async exchangeClientCredentials(params: {
+    clientId: string;
+    clientSecret: string;
+    scope?: string;
+  }): Promise<TokenResponse> {
+    try {
+      // Get and validate client
+      const client = await this.repository.getClient(params.clientId);
+      if (!client) {
+        throw new InvalidClientError('Unknown client');
+      }
+
+      // Validate that this is a confidential client
+      if (client.clientType !== 'confidential') {
+        throw new InvalidClientError('Client credentials grant requires confidential client');
+      }
+
+      // Validate client secret
+      if (!client.secret || !params.clientSecret || params.clientSecret !== client.secret) {
+        throw new InvalidClientError('Invalid client secret');
+      }
+
+      // Validate requested scopes (if provided)
+      let finalScope = client.scope; // Default to client's registered scope
+      if (params.scope) {
+        const requestedScopes = parseScopes(params.scope);
+        const clientScopes = parseScopes(client.scope);
+        
+        // In free scope mode, accept any scopes for machine-to-machine
+        // In production, you might want to validate scopes are subset of client's allowed scopes
+        logger.info('Client credentials scope validation', { 
+          clientScopes, 
+          requestedScopes,
+          mode: 'free_scope' 
+        });
+        
+        finalScope = params.scope;
+      }
+
+      // Create access token (no refresh token for client credentials)
+      const accessToken = createAccessToken({
+        userEmail: `${client.id}@machine`, // Machine account identifier
+        clientId: client.id,
+        scope: finalScope,
+        expiresIn: this.config.JWT_EXPIRES_IN
+      });
+
+      const accessTokenExpiresAt = calculateExpirationDate(this.config.JWT_EXPIRES_IN);
+
+      // Store access token
+      await this.repository.createToken({
+        token: accessToken,
+        type: 'access',
+        clientId: client.id,
+        userEmail: `${client.id}@machine`, // Machine account
+        scope: finalScope,
+        expiresAt: accessTokenExpiresAt
+      });
+
+      logger.info(`Client credentials tokens issued for client: ${client.name}`);
+
+      return {
+        access_token: accessToken,
+        token_type: 'Bearer',
+        expires_in: Math.floor(getTokenLifetime(accessTokenExpiresAt)),
+        scope: finalScope
+        // Note: No refresh_token for client credentials grant
+      };
+    } catch (error) {
+      logger.error('Client credentials exchange failed:', error);
+      throw error;
+    }
+  }
+
   // Refresh Token
   async refreshTokens(params: {
     refreshToken: string;
@@ -319,10 +425,11 @@ export class OAuthService {
         const requestedScopes = parseScopes(params.scope);
         const originalScopes = parseScopes(storedToken.scope || '');
         
-        const invalidScopes = requestedScopes.filter(s => !originalScopes.includes(s));
-        if (invalidScopes.length > 0) {
-          throw new InvalidScopeError(`Scope exceeds original: ${invalidScopes.join(', ')}`);
-        }
+        // Free scope mode - allow any scopes in refresh token requests
+        logger.info('Free scope mode: accepting all requested scopes', { 
+          originalScopes, 
+          requestedScopes 
+        });
         
         finalScope = params.scope;
       }

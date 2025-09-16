@@ -24,7 +24,6 @@ export interface OAuthConfig {
   OAUTH_REQUIRE_DOMAIN_VERIFICATION: boolean;
   OAUTH_ALLOW_DYNAMIC_REGISTRATION: boolean;
   OAUTH_CODE_CHALLENGE_METHODS: string;
-  OAUTH_SUPPORTED_SCOPES: string;
 }
 
 let cachedConfig: OAuthConfig | null = null;
@@ -55,9 +54,8 @@ export function getOAuthConfig(): OAuthConfig {
       // OAuth specific settings
       OAUTH_DOMAIN_RESTRICTION: process.env.OAUTH_DOMAIN_RESTRICTION || 'arbio-group.com',
       OAUTH_REQUIRE_DOMAIN_VERIFICATION: process.env.OAUTH_REQUIRE_DOMAIN_VERIFICATION === 'true',
-      OAUTH_ALLOW_DYNAMIC_REGISTRATION: process.env.OAUTH_ALLOW_DYNAMIC_REGISTRATION === 'true',
+      OAUTH_ALLOW_DYNAMIC_REGISTRATION: process.env.OAUTH_ALLOW_DYNAMIC_REGISTRATION !== 'false', // Default to true
       OAUTH_CODE_CHALLENGE_METHODS: process.env.OAUTH_CODE_CHALLENGE_METHODS || 'S256',
-      OAUTH_SUPPORTED_SCOPES: process.env.OAUTH_SUPPORTED_SCOPES || 'mcp:read,mcp:write,workflows:read,workflows:write,user:profile',
     };
     
     // Basic validation
@@ -70,7 +68,7 @@ export function getOAuthConfig(): OAuthConfig {
     }
   }
   
-  return cachedConfig;
+  return cachedConfig!; // Non-null assertion since we just set it above
 }
 
 export const OAUTH_SCOPES = {
@@ -98,17 +96,18 @@ export const CLIENT_TYPES = {
 
 // Helper functions
 export function getSupportedScopes(): string[] {
-  const config = getOAuthConfig();
-  return config.OAUTH_SUPPORTED_SCOPES.split(',').map((s: string) => s.trim());
+  // Free scope mode - return wildcard to indicate all scopes are supported
+  return ['*'];
 }
 
 export function isValidScope(scope: string): boolean {
-  const supportedScopes = getSupportedScopes();
-  return supportedScopes.includes(scope);
+  // Free scope mode - all scopes are valid
+  return true;
 }
 
 export function validateScopes(requestedScopes: string[]): boolean {
-  return requestedScopes.every(scope => isValidScope(scope));
+  // Free scope mode - all scopes are always valid
+  return true;
 }
 
 export function parseScopes(scopeString: string): string[] {

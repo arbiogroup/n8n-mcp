@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import express, { Router, Request, Response } from 'express';
 import { OAuthService } from '../services/oauth-service';
 import { createOAuthMiddleware, requireScope, AuthenticatedRequest } from '../middleware/oauth-middleware';
 import { 
@@ -9,35 +9,121 @@ import {
 } from '../models/oauth-models';
 import { logger } from '../utils/logger';
 
+/**
+ * Enhance registration request with auto-detected client information
+ */
+function enhanceRegistrationRequest(request: ClientRegistrationRequest, req: Request): ClientRegistrationRequest {
+  const userAgent = req.get('user-agent') || '';
+  const origin = req.get('origin') || '';
+  
+  // Auto-detect Claude AI (keep specific client_id for compatibility)
+  if (userAgent.includes('Claude') || origin.includes('claude.ai') || 
+      request.redirect_uris?.some(uri => uri.includes('claude.ai'))) {
+    
+    logger.info('Auto-detected Claude AI client registration');
+    
+    return {
+      ...request,
+      client_name: request.client_name || 'Claude AI',
+      client_type: 'public',
+      redirect_uris: request.redirect_uris || [
+        'https://claude.ai/api/mcp/auth_callback',
+        'https://claude.ai/oauth/callback'
+      ],
+      // Accept any scopes requested by Claude AI - no restrictions
+      scope: request.scope || '*', // Wildcard for all scopes
+      client_id: '992236964315-rpq06uolni85341iafnc51q4r6sogmd6.apps.googleusercontent.com'
+    };
+  }
+  
+  // For all other clients - completely free registration
+  logger.info('Processing free scope client registration');
+  return {
+    ...request,
+    client_type: request.client_type || 'public', // Default to public for easier integration
+    // Accept ANY scopes requested - no validation or restrictions
+    scope: request.scope || '*' // Wildcard means "all possible scopes"
+  };
+}
+
 export function createClientManagementRouter(oauthService: OAuthService): Router {
   const router = Router();
   const oauthMiddleware = createOAuthMiddleware(oauthService);
 
   /**
-   * POST /oauth/register - Dynamic client registration
+   * POST /register - Dynamic client registration (RFC 7591) - MCP Compliant
+   * POST /oauth/register - Legacy path for backward compatibility
    * 
    * Allows applications to register as OAuth clients dynamically.
    * This is a public endpoint (no authentication required).
+   * Supports both standard OAuth clients and automatic Claude AI detection.
    */
-  router.post('/register', async (req: Request, res: Response): Promise<any> => {
+  // Custom JSON body parser middleware for registration
+  const parseJsonBody = (req: Request, res: Response, next: any) => {
+    if (req.get('content-type')?.includes('application/json')) {
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        try {
+          req.body = JSON.parse(body);
+          next();
+        } catch (error) {
+          logger.error('❌ JSON parsing error:', error);
+          res.status(400).json({
+            error: 'invalid_request',
+            error_description: 'Invalid JSON in request body'
+          });
+        }
+      });
+    } else {
+      next();
+    }
+  };
+
+  router.post('/register', parseJsonBody, async (req: Request, res: Response): Promise<any> => {
     try {
+      logger.info('🔧 Client registration endpoint hit', {
+        method: req.method,
+        path: req.path,
+        hasBody: !!req.body,
+        bodyContent: req.body,
+        contentType: req.get('content-type'),
+        userAgent: req.get('user-agent')
+      });
+      
+      if (!req.body) {
+        logger.error('❌ No request body received');
+        return res.status(400).json({
+          error: 'invalid_request',
+          error_description: 'Request body is required'
+        });
+      }
+      
       const registrationRequest = req.body as ClientRegistrationRequest;
 
-      logger.info('Client registration request received', {
+      logger.info('Dynamic client registration request received', {
         client_name: registrationRequest.client_name,
         redirect_uris: registrationRequest.redirect_uris,
-        client_type: registrationRequest.client_type
+        client_type: registrationRequest.client_type,
+        user_agent: req.get('user-agent'),
+        origin: req.get('origin')
       });
 
+      // Auto-detect common clients and enhance registration data
+      const enhancedRequest = enhanceRegistrationRequest(registrationRequest, req);
+
       // Validate request
-      if (!registrationRequest.client_name) {
+      if (!enhancedRequest.client_name) {
         return res.status(400).json({
           error: 'invalid_client_metadata',
           error_description: 'Missing client_name'
         });
       }
 
-      if (!registrationRequest.redirect_uris || !Array.isArray(registrationRequest.redirect_uris) || registrationRequest.redirect_uris.length === 0) {
+      if (!enhancedRequest.redirect_uris || !Array.isArray(enhancedRequest.redirect_uris) || enhancedRequest.redirect_uris.length === 0) {
         return res.status(400).json({
           error: 'invalid_client_metadata',
           error_description: 'Missing or invalid redirect_uris array'
@@ -45,7 +131,7 @@ export function createClientManagementRouter(oauthService: OAuthService): Router
       }
 
       // Validate redirect URIs
-      for (const uri of registrationRequest.redirect_uris) {
+      for (const uri of enhancedRequest.redirect_uris) {
         try {
           new URL(uri);
         } catch {
@@ -57,7 +143,7 @@ export function createClientManagementRouter(oauthService: OAuthService): Router
       }
 
       try {
-        const registrationResponse = await oauthService.registerClient(registrationRequest);
+        const registrationResponse = await oauthService.registerClient(enhancedRequest);
 
         logger.info('Client registered successfully', {
           client_id: registrationResponse.client_id,
@@ -90,11 +176,19 @@ export function createClientManagementRouter(oauthService: OAuthService): Router
       }
 
     } catch (error) {
-      logger.error('Client registration endpoint error:', error);
-
-      res.status(500).json({
+      logger.error('❌ Client registration error:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        path: req.path,
+        method: req.method
+      });
+      
+      return res.status(500).json({
         error: 'server_error',
-        error_description: 'Internal server error'
+        error_description: 'Client registration failed - check server logs',
+        debug_info: process.env.NODE_ENV === 'development' ? {
+          error: error instanceof Error ? error.message : String(error)
+        } : undefined
       });
     }
   });
