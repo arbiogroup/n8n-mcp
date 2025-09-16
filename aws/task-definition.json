@@ -10,12 +10,40 @@
       "cpu": 0,
       "environment": [
         {
+          "name": "NODE_ENV",
+          "value": "production"
+        },
+        {
+          "name": "PORT",
+          "value": "3000"
+        },
+        {
+          "name": "HOST",
+          "value": "0.0.0.0"
+        },
+        {
+          "name": "TRUST_PROXY",
+          "value": "1"
+        },
+        {
+          "name": "BASE_URL",
+          "value": "https://flow.arbio.io"
+        },
+        {
+          "name": "OAUTH_ISSUER",
+          "value": "https://flow.arbio.io"
+        },
+        {
           "name": "GOOGLE_CALLBACK_URL",
           "value": "https://flow.arbio.io/auth/google/callback"
         },
         {
           "name": "OAUTH_REDIRECT_URI",
           "value": "https://flow.arbio.io/auth/google/callback"
+        },
+        {
+          "name": "JWT_EXPIRES_IN",
+          "value": "1h"
         },
         {
           "name": "JWT_REFRESH_EXPIRES_IN",
@@ -26,12 +54,16 @@
           "value": "arbio-group.com"
         },
         {
-          "name": "JWT_EXPIRES_IN",
-          "value": "1h"
-        },
-        {
           "name": "OAUTH_REQUIRE_DOMAIN_VERIFICATION",
           "value": "true"
+        },
+        {
+          "name": "OAUTH_ALLOW_DYNAMIC_REGISTRATION",
+          "value": "true"
+        },
+        {
+          "name": "OAUTH_CODE_CHALLENGE_METHODS",
+          "value": "S256"
         }
       ],
       "essential": true,
