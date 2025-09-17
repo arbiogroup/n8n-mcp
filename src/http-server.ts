@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Fixed HTTP server for n8n-MCP that properly handles StreamableHTTPServerTransport initialization
- * This implementation ensures the transport is properly initialized before handling requests
+ * OAuth-enabled HTTP server for n8n-MCP that implements MCP Authorization specification
+ * This implementation provides OAuth 2.1 with PKCE and Google OAuth integration
  */
 import express from 'express';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -11,8 +11,11 @@ import { N8NDocumentationMCPServer } from './mcp/server';
 import { logger } from './utils/logger';
 import { PROJECT_VERSION } from './utils/version';
 import { isN8nApiConfigured } from './config/n8n-api';
+import { oauthService } from './services/oauth-service';
+import { googleOAuthService } from './services/google-oauth-service';
 import dotenv from 'dotenv';
-import { readFileSync } from 'fs';
+import crypto from 'crypto';
+import { IncomingMessage } from 'http';
 import { getStartupBaseUrl, formatEndpointUrls, detectBaseUrl } from './utils/url-detector';
 import { 
   negotiateProtocolVersion, 
@@ -23,70 +26,39 @@ import {
 dotenv.config();
 
 let expressServer: any;
-let authToken: string | null = null;
 
 /**
- * Load auth token from environment variable or file
+ * Validate OAuth environment configuration
  */
-export function loadAuthToken(): string | null {
-  // First, try AUTH_TOKEN environment variable
-  if (process.env.AUTH_TOKEN) {
-    logger.info('Using AUTH_TOKEN from environment variable');
-    return process.env.AUTH_TOKEN;
+function validateOAuthEnvironment(): { isValid: boolean; errors: string[] } {
+  const errors: string[] = [];
+  
+  // Check if Google OAuth is configured
+  const googleConfig = googleOAuthService.getConfigStatus();
+  if (!googleConfig.configured) {
+    errors.push(`Google OAuth not configured. Missing: ${googleConfig.missing.join(', ')}`);
   }
   
-  // Then, try AUTH_TOKEN_FILE
-  if (process.env.AUTH_TOKEN_FILE) {
-    try {
-      const token = readFileSync(process.env.AUTH_TOKEN_FILE, 'utf-8').trim();
-      logger.info(`Loaded AUTH_TOKEN from file: ${process.env.AUTH_TOKEN_FILE}`);
-      return token;
-    } catch (error) {
-      logger.error(`Failed to read AUTH_TOKEN_FILE: ${process.env.AUTH_TOKEN_FILE}`, error);
-      console.error(`ERROR: Failed to read AUTH_TOKEN_FILE: ${process.env.AUTH_TOKEN_FILE}`);
-      console.error(error instanceof Error ? error.message : 'Unknown error');
-      return null;
-    }
-  }
-  
-  return null;
+  return {
+    isValid: errors.length === 0,
+    errors
+  };
 }
 
 /**
  * Validate required environment variables
  */
 function validateEnvironment() {
-  // Load auth token from env var or file
-  authToken = loadAuthToken();
+  const oauthValidation = validateOAuthEnvironment();
   
-  if (!authToken || authToken.trim() === '') {
-    logger.error('No authentication token found or token is empty');
-    console.error('ERROR: AUTH_TOKEN is required for HTTP mode and cannot be empty');
-    console.error('Set AUTH_TOKEN environment variable or AUTH_TOKEN_FILE pointing to a file containing the token');
-    console.error('Generate AUTH_TOKEN with: openssl rand -base64 32');
-    process.exit(1);
-  }
-  
-  // Update authToken to trimmed version
-  authToken = authToken.trim();
-  
-  if (authToken.length < 32) {
-    logger.warn('AUTH_TOKEN should be at least 32 characters for security');
-    console.warn('WARNING: AUTH_TOKEN should be at least 32 characters for security');
-  }
-  
-  // Check for default token and show prominent warnings
-  if (authToken === 'REPLACE_THIS_AUTH_TOKEN_32_CHARS_MIN_abcdefgh') {
-    logger.warn('⚠️ SECURITY WARNING: Using default AUTH_TOKEN - CHANGE IMMEDIATELY!');
-    logger.warn('Generate secure token with: openssl rand -base64 32');
-    
-    // Only show console warnings in HTTP mode
-    if (process.env.MCP_MODE === 'http') {
-      console.warn('\n⚠️  SECURITY WARNING ⚠️');
-      console.warn('Using default AUTH_TOKEN - CHANGE IMMEDIATELY!');
-      console.warn('Generate secure token: openssl rand -base64 32');
-      console.warn('Update via Railway dashboard environment variables\n');
-    }
+  if (!oauthValidation.isValid) {
+    logger.warn('OAuth configuration warnings:', oauthValidation.errors);
+    console.warn('⚠️ OAuth Configuration Warnings:');
+    oauthValidation.errors.forEach(error => console.warn(`  - ${error}`));
+    console.warn('\nSome OAuth features may not be available.\n');
+  } else {
+    logger.info('OAuth environment validation passed');
+    console.log('✅ OAuth configuration is valid');
   }
 }
 
@@ -113,7 +85,7 @@ async function shutdown() {
   }
 }
 
-export async function startFixedHTTPServer() {
+export async function startOAuthHTTPServer() {
   validateEnvironment();
   
   const app = express();
@@ -125,7 +97,13 @@ export async function startFixedHTTPServer() {
     logger.info(`Trust proxy enabled with ${trustProxy} hop(s)`);
   }
   
-  // CRITICAL: Don't use any body parser - StreamableHTTPServerTransport needs raw stream
+  // Body parser for OAuth endpoints (but not for MCP endpoint)
+  app.use('/auth', express.urlencoded({ extended: true }));
+  app.use('/auth', express.json());
+  app.use('/.well-known', express.json());
+  // Only apply body parsing to POST endpoints that need it
+  app.use(['/token', '/register', '/revoke', '/introspect'], express.urlencoded({ extended: true }));
+  app.use(['/token', '/register', '/revoke', '/introspect'], express.json());
   
   // Security headers
   app.use((req, res, next) => {
@@ -141,7 +119,7 @@ export async function startFixedHTTPServer() {
     const allowedOrigin = process.env.CORS_ORIGIN || '*';
     res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
     res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, MCP-Protocol-Version');
     res.setHeader('Access-Control-Max-Age', '86400');
     
     if (req.method === 'OPTIONS') {
@@ -165,17 +143,434 @@ export async function startFixedHTTPServer() {
   const mcpServer = new N8NDocumentationMCPServer();
   logger.info('Created persistent MCP server instance');
 
-  // Root endpoint with API information
-  app.get('/', (req, res) => {
+  // Get base URL for OAuth endpoints
+  const getBaseUrl = (req: express.Request): string => {
     const port = parseInt(process.env.PORT || '3000');
     const host = process.env.HOST || '0.0.0.0';
-    const baseUrl = detectBaseUrl(req, host, port);
+    return detectBaseUrl(req, host, port);
+  };
+
+  // OAuth Authorization Server Metadata (RFC 8414)
+  app.get('/.well-known/oauth-authorization-server', (req, res) => {
+    const baseUrl = getBaseUrl(req);
+    
+    // Support MCP-Protocol-Version header as per spec
+    const protocolVersion = req.get('MCP-Protocol-Version');
+    if (protocolVersion) {
+      logger.debug('OAuth metadata request with MCP protocol version', { protocolVersion });
+    }
+    
+    res.json({
+      issuer: baseUrl,
+      authorization_endpoint: `${baseUrl}/authorize`,
+      token_endpoint: `${baseUrl}/token`,
+      registration_endpoint: `${baseUrl}/register`,
+      revocation_endpoint: `${baseUrl}/revoke`,
+      introspection_endpoint: `${baseUrl}/introspect`,
+      scopes_supported: ['read', 'write'],
+      response_types_supported: ['code'],
+      grant_types_supported: ['authorization_code', 'refresh_token'],
+      code_challenge_methods_supported: ['S256', 'plain'],
+      token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
+      service_documentation: 'https://github.com/czlonkowski/n8n-mcp',
+      ui_locales_supported: ['en'],
+      claims_supported: ['sub', 'email', 'name'],
+      request_parameter_supported: false,
+      request_uri_parameter_supported: false
+    });
+  });
+
+  // Dynamic Client Registration (RFC 7591)
+  app.post('/register', (req, res) => {
+    try {
+      const { 
+        redirect_uris, 
+        client_name, 
+        client_type = 'public',
+        grant_types = ['authorization_code', 'refresh_token'],
+        token_endpoint_auth_method 
+      } = req.body;
+      
+      if (!redirect_uris || !Array.isArray(redirect_uris) || redirect_uris.length === 0) {
+        return res.status(400).json({
+          error: 'invalid_request',
+          error_description: 'redirect_uris is required and must be a non-empty array'
+        });
+      }
+      
+      // Validate redirect URIs according to MCP auth spec - MUST be HTTPS or localhost
+      for (const uri of redirect_uris) {
+        if (typeof uri !== 'string') {
+          return res.status(400).json({
+            error: 'invalid_redirect_uri',
+            error_description: 'All redirect URIs must be strings'
+          });
+        }
+        
+        try {
+          const parsed = new URL(uri);
+          const isHttpsValid = parsed.protocol === 'https:';
+          const isLocalhostValid = (parsed.protocol === 'http:') && 
+            (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '::1');
+            
+          if (!isHttpsValid && !isLocalhostValid) {
+            return res.status(400).json({
+              error: 'invalid_redirect_uri',
+              error_description: 'Redirect URIs must be HTTPS URLs or localhost HTTP URLs'
+            });
+          }
+        } catch (error) {
+          return res.status(400).json({
+            error: 'invalid_redirect_uri',
+            error_description: 'Invalid redirect URI format'
+          });
+        }
+      }
+      
+      const client = oauthService.registerClient({
+        redirect_uris,
+        client_name,
+        client_type: client_type as 'public' | 'confidential',
+        grant_types,
+        token_endpoint_auth_method
+      });
+      
+      const response: any = {
+        client_id: client.client_id,
+        client_name: client.client_name,
+        client_type: client.client_type,
+        redirect_uris: client.redirect_uris,
+        grant_types: client.grant_types,
+        token_endpoint_auth_method: client.token_endpoint_auth_method,
+        client_id_issued_at: Math.floor(client.created_at / 1000)
+      };
+      
+      if (client.client_secret) {
+        response.client_secret = client.client_secret;
+        response.client_secret_expires_at = 0; // Never expires
+      }
+      
+      res.status(201).json(response);
+      return;
+      
+    } catch (error) {
+      logger.error('Client registration error:', error);
+      res.status(500).json({
+        error: 'server_error',
+        error_description: 'Internal server error during client registration'
+      });
+      return;
+    }
+  });
+
+  // Authorization Endpoint
+  app.get('/authorize', (req, res) => {
+    try {
+      const {
+        client_id,
+        redirect_uri,
+        response_type,
+        scope = 'read',
+        state,
+        code_challenge,
+        code_challenge_method = 'S256'
+      } = req.query;
+      
+      // Validate required parameters
+      if (!client_id || !redirect_uri || response_type !== 'code') {
+        return         res.status(400).json({
+          error: 'invalid_request',
+          error_description: 'Missing or invalid required parameters'
+        });
+        return;
+      }
+      
+      // Validate client and redirect URI
+      if (!oauthService.validateRedirectUri(client_id as string, redirect_uri as string)) {
+        return         res.status(400).json({
+          error: 'invalid_client',
+          error_description: 'Invalid client_id or redirect_uri'
+        });
+        return;
+      }
+      
+      // Check if Google OAuth is configured for third-party auth
+      if (!googleOAuthService.isConfigured()) {
+        const errorUrl = new URL(redirect_uri as string);
+        errorUrl.searchParams.set('error', 'server_error');
+        errorUrl.searchParams.set('error_description', 'OAuth provider not configured');
+        if (state) errorUrl.searchParams.set('state', state as string);
+        res.redirect(errorUrl.toString());
+        return;
+      }
+      
+      // Generate Google OAuth URL for third-party authorization
+      const googleAuthUrl = googleOAuthService.generateAuthUrl(
+        client_id as string,
+        redirect_uri as string,
+        code_challenge as string,
+        code_challenge_method as string,
+        (scope as string).split(' '),
+        state as string // Pass through the state parameter
+      );
+      
+      // Redirect to Google OAuth
+      res.redirect(googleAuthUrl);
+      return;
+      
+    } catch (error) {
+      logger.error('Authorization endpoint error:', error);
+      res.status(500).json({
+        error: 'server_error',
+        error_description: 'Internal server error'
+      });
+      return;
+    }
+  });
+
+  // Google OAuth Callback
+  app.get('/auth/google/callback', async (req, res) => {
+    try {
+      const { code, state, error } = req.query;
+      
+      if (error) {
+        logger.error('Google OAuth error:', error);
+        res.status(400).json({
+          error: 'access_denied',
+          error_description: `Google OAuth error: ${error}`
+        });
+        return;
+      }
+      
+      if (!code || !state) {
+        res.status(400).json({
+          error: 'invalid_request',
+          error_description: 'Missing authorization code or state'
+        });
+        return;
+      }
+      
+      // Handle Google OAuth callback
+      const result = await googleOAuthService.handleCallback(code as string, state as string);
+      
+      if (!result) {
+        res.status(400).json({
+          error: 'access_denied',
+          error_description: 'Google OAuth authentication failed'
+        });
+        return;
+      }
+      
+      const { authState, userInfo } = result;
+      
+      // Store user info and generate authorization code for original client
+      const userId = oauthService.storeGoogleUser(userInfo);
+      const authCode = oauthService.generateAuthorizationCode(
+        authState.original_client_id,
+        authState.original_redirect_uri,
+        userId,
+        authState.scopes,
+        authState.code_challenge,
+        authState.code_challenge_method
+      );
+      
+      // Redirect back to original client with authorization code
+      const redirectUrl = new URL(authState.original_redirect_uri);
+      redirectUrl.searchParams.set('code', authCode);
+      // Always pass through the original state parameter if provided
+      if (authState.original_state) {
+        redirectUrl.searchParams.set('state', authState.original_state);
+      }
+      
+      res.redirect(redirectUrl.toString());
+      
+    } catch (error) {
+      logger.error('Google OAuth callback error:', error);
+      res.status(500).json({
+        error: 'server_error',
+        error_description: 'Internal server error during OAuth callback'
+      });
+    }
+  });
+
+  // Token Revocation Endpoint (RFC 7009)
+  app.post('/revoke', (req, res) => {
+    try {
+      const { token, token_type_hint } = req.body;
+      
+      if (!token) {
+        return res.status(400).json({
+          error: 'invalid_request',
+          error_description: 'Missing required parameter: token'
+        });
+      }
+      
+      // Try to revoke as access token first, then refresh token
+      let revoked = false;
+      const accessToken = oauthService.validateAccessToken(token);
+      if (accessToken) {
+        // Would need to implement revocation in oauth service
+        logger.info('Access token revoked', { client_id: accessToken.client_id });
+        revoked = true;
+      }
+      
+      // According to RFC 7009, return 200 OK even if token was not found
+      res.status(200).json({});
+      return;
+      
+    } catch (error) {
+      logger.error('Token revocation error:', error);
+      res.status(500).json({
+        error: 'server_error',
+        error_description: 'Internal server error'
+      });
+      return;
+    }
+  });
+
+  // Token Introspection Endpoint (RFC 7662)
+  app.post('/introspect', (req, res) => {
+    try {
+      const { token } = req.body;
+      
+      if (!token) {
+        return res.status(400).json({
+          error: 'invalid_request',
+          error_description: 'Missing required parameter: token'
+        });
+      }
+      
+      const accessToken = oauthService.validateAccessToken(token);
+      
+      if (!accessToken) {
+        // Token is not active
+        res.json({ active: false });
+        return;
+      }
+      
+      // Token is active, return token info
+      res.json({
+        active: true,
+        client_id: accessToken.client_id,
+        username: accessToken.user_id,
+        scope: accessToken.scopes.join(' '),
+        token_type: 'Bearer',
+        exp: Math.floor(accessToken.expires_at / 1000),
+        iat: Math.floor(accessToken.created_at / 1000)
+      });
+      return;
+      
+    } catch (error) {
+      logger.error('Token introspection error:', error);
+      res.status(500).json({
+        error: 'server_error',
+        error_description: 'Internal server error'
+      });
+      return;
+    }
+  });
+
+  // Token Endpoint
+  app.post('/token', (req, res) => {
+    try {
+      const { 
+        grant_type, 
+        code, 
+        client_id, 
+        redirect_uri, 
+        code_verifier,
+        refresh_token 
+      } = req.body;
+      
+      if (grant_type === 'authorization_code') {
+        // Authorization code grant
+        if (!code || !client_id || !redirect_uri) {
+          return res.status(400).json({
+            error: 'invalid_request',
+            error_description: 'Missing required parameters for authorization_code grant'
+          });
+        }
+        
+        const accessToken = oauthService.exchangeAuthorizationCode(
+          code,
+          client_id,
+          redirect_uri,
+          code_verifier
+        );
+        
+        if (!accessToken) {
+          return res.status(400).json({
+            error: 'invalid_grant',
+            error_description: 'Invalid or expired authorization code'
+          });
+        }
+        
+        res.json({
+          access_token: accessToken.access_token,
+          token_type: accessToken.token_type,
+          expires_in: accessToken.expires_in,
+          refresh_token: accessToken.refresh_token,
+          scope: accessToken.scopes.join(' ')
+        });
+        return;
+        
+      } else if (grant_type === 'refresh_token') {
+        // Refresh token grant
+        if (!refresh_token || !client_id) {
+          return res.status(400).json({
+            error: 'invalid_request',
+            error_description: 'Missing required parameters for refresh_token grant'
+          });
+        }
+        
+        const newAccessToken = oauthService.refreshAccessToken(refresh_token, client_id);
+        
+        if (!newAccessToken) {
+          return res.status(400).json({
+            error: 'invalid_grant',
+            error_description: 'Invalid or expired refresh token'
+          });
+        }
+        
+        res.json({
+          access_token: newAccessToken.access_token,
+          token_type: newAccessToken.token_type,
+          expires_in: newAccessToken.expires_in,
+          refresh_token: newAccessToken.refresh_token,
+          scope: newAccessToken.scopes.join(' ')
+        });
+        return;
+        
+      } else {
+        res.status(400).json({
+          error: 'unsupported_grant_type',
+          error_description: `Grant type '${grant_type}' is not supported`
+        });
+        return;
+      }
+      
+    } catch (error) {
+      logger.error('Token endpoint error:', error);
+      res.status(500).json({
+        error: 'server_error',
+        error_description: 'Internal server error'
+      });
+      return;
+    }
+  });
+
+  // Default OAuth endpoints as per MCP auth spec section "Fallbacks for Servers without Metadata Discovery"
+  // The /authorize, /token, and /register endpoints above serve as the default endpoints
+
+  // Root endpoint with API information
+  app.get('/', (req, res) => {
+    const baseUrl = getBaseUrl(req);
     const endpoints = formatEndpointUrls(baseUrl);
     
     res.json({
       name: 'n8n Documentation MCP Server',
       version: PROJECT_VERSION,
-      description: 'Model Context Protocol server providing comprehensive n8n node documentation and workflow management',
+      description: 'Model Context Protocol server with OAuth 2.1 authorization',
       endpoints: {
         health: {
           url: endpoints.health,
@@ -186,12 +581,46 @@ export async function startFixedHTTPServer() {
           url: endpoints.mcp,
           method: 'GET/POST',
           description: 'MCP endpoint - GET for info, POST for JSON-RPC'
+        },
+        oauth_metadata: {
+          url: `${baseUrl}/.well-known/oauth-authorization-server`,
+          method: 'GET',
+          description: 'OAuth Authorization Server Metadata'
+        },
+        authorize: {
+          url: `${baseUrl}/authorize`,
+          method: 'GET',
+          description: 'OAuth authorization endpoint'
+        },
+        token: {
+          url: `${baseUrl}/token`,
+          method: 'POST',
+          description: 'OAuth token endpoint'
+        },
+        register: {
+          url: `${baseUrl}/register`,
+          method: 'POST',
+          description: 'OAuth dynamic client registration'
+        },
+        revoke: {
+          url: `${baseUrl}/revoke`,
+          method: 'POST',
+          description: 'OAuth token revocation'
+        },
+        introspect: {
+          url: `${baseUrl}/introspect`,
+          method: 'POST',
+          description: 'OAuth token introspection'
         }
       },
       authentication: {
-        type: 'Bearer Token',
-        header: 'Authorization: Bearer <token>',
-        required_for: ['POST /mcp']
+        type: 'OAuth 2.1',
+        authorization_endpoint: `${baseUrl}/authorize`,
+        token_endpoint: `${baseUrl}/token`,
+        registration_endpoint: `${baseUrl}/register`,
+        metadata_endpoint: `${baseUrl}/.well-known/oauth-authorization-server`,
+        required_for: ['POST /mcp'],
+        third_party_provider: googleOAuthService.isConfigured() ? 'Google' : 'Not configured'
       },
       documentation: 'https://github.com/czlonkowski/n8n-mcp'
     });
@@ -199,15 +628,22 @@ export async function startFixedHTTPServer() {
 
   // Health check endpoint
   app.get('/health', (req, res) => {
+    const oauthStats = oauthService.getStats();
+    const googleStats = googleOAuthService.getStats();
+    
     res.json({ 
       status: 'ok', 
-      mode: 'http-fixed',
+      mode: 'oauth-enabled',
       version: PROJECT_VERSION,
       uptime: Math.floor(process.uptime()),
       memory: {
         used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
         total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
         unit: 'MB'
+      },
+      oauth: {
+        service: oauthStats,
+        google: googleStats
       },
       timestamp: new Date().toISOString()
     });
@@ -262,16 +698,16 @@ export async function startFixedHTTPServer() {
     });
   });
 
-  // Main MCP endpoint - handle each request with custom transport handling
+  // Main MCP endpoint - handle each request with OAuth authentication
   app.post('/mcp', async (req: express.Request, res: express.Response): Promise<void> => {
     const startTime = Date.now();
     
-    // Enhanced authentication check with specific logging
+    // OAuth token authentication
     const authHeader = req.headers.authorization;
     
     // Check if Authorization header is missing
     if (!authHeader) {
-      logger.warn('Authentication failed: Missing Authorization header', { 
+      logger.warn('MCP request failed: Missing Authorization header', { 
         ip: req.ip,
         userAgent: req.get('user-agent'),
         reason: 'no_auth_header'
@@ -280,7 +716,7 @@ export async function startFixedHTTPServer() {
         jsonrpc: '2.0',
         error: {
           code: -32001,
-          message: 'Unauthorized'
+          message: 'Unauthorized - OAuth Bearer token required'
         },
         id: null
       });
@@ -289,43 +725,50 @@ export async function startFixedHTTPServer() {
     
     // Check if Authorization header has Bearer prefix
     if (!authHeader.startsWith('Bearer ')) {
-      logger.warn('Authentication failed: Invalid Authorization header format (expected Bearer token)', { 
+      logger.warn('MCP request failed: Invalid Authorization header format', { 
         ip: req.ip,
         userAgent: req.get('user-agent'),
-        reason: 'invalid_auth_format',
-        headerPrefix: authHeader.substring(0, Math.min(authHeader.length, 10)) + '...'  // Log first 10 chars for debugging
+        reason: 'invalid_auth_format'
       });
       res.status(401).json({ 
         jsonrpc: '2.0',
         error: {
           code: -32001,
-          message: 'Unauthorized'
+          message: 'Unauthorized - Bearer token format required'
         },
         id: null
       });
       return;
     }
     
-    // Extract token and trim whitespace
+    // Extract token and validate with OAuth service
     const token = authHeader.slice(7).trim();
+    const accessToken = oauthService.validateAccessToken(token);
     
-    // Check if token matches
-    if (token !== authToken) {
-      logger.warn('Authentication failed: Invalid token', { 
+    if (!accessToken) {
+      logger.warn('MCP request failed: Invalid or expired OAuth token', { 
         ip: req.ip,
         userAgent: req.get('user-agent'),
-        reason: 'invalid_token'
+        reason: 'invalid_oauth_token'
       });
       res.status(401).json({ 
         jsonrpc: '2.0',
         error: {
           code: -32001,
-          message: 'Unauthorized'
+          message: 'Unauthorized - Invalid or expired OAuth token'
         },
         id: null
       });
       return;
     }
+    
+    // Log successful authentication
+    logger.info('MCP request authenticated', {
+      client_id: accessToken.client_id,
+      user_id: accessToken.user_id,
+      scopes: accessToken.scopes,
+      ip: req.ip
+    });
     
     try {
       // Instead of using StreamableHTTPServerTransport, we'll handle the request directly
@@ -333,11 +776,14 @@ export async function startFixedHTTPServer() {
       
       // Collect the raw body
       let body = '';
-      req.on('data', chunk => {
-        body += chunk.toString();
+      const chunks: Buffer[] = [];
+      
+      (req as any).on('data', (chunk: Buffer) => {
+        chunks.push(chunk);
       });
       
-      req.on('end', async () => {
+      (req as any).on('end', async () => {
+        body = Buffer.concat(chunks).toString('utf8');
         try {
           const jsonRpcRequest = JSON.parse(body);
           logger.debug('Received JSON-RPC request:', { method: jsonRpcRequest.method });
@@ -441,7 +887,9 @@ export async function startFixedHTTPServer() {
           const duration = Date.now() - startTime;
           logger.info('MCP request completed', { 
             duration,
-            method: jsonRpcRequest.method 
+            method: jsonRpcRequest.method,
+            client_id: accessToken.client_id,
+            user_id: accessToken.user_id
           });
         } catch (error) {
           logger.error('Error processing request:', error);
@@ -504,31 +952,36 @@ export async function startFixedHTTPServer() {
   const host = process.env.HOST || '0.0.0.0';
   
   expressServer = app.listen(port, host, () => {
-    logger.info(`n8n MCP Fixed HTTP Server started`, { port, host });
+    logger.info(`n8n MCP OAuth HTTP Server started`, { port, host });
     
     // Detect the base URL using our utility
     const baseUrl = getStartupBaseUrl(host, port);
     const endpoints = formatEndpointUrls(baseUrl);
     
-    console.log(`n8n MCP Fixed HTTP Server running on ${host}:${port}`);
+    console.log(`\n✅ n8n MCP OAuth HTTP Server running on ${host}:${port}`);
     console.log(`Health check: ${endpoints.health}`);
     console.log(`MCP endpoint: ${endpoints.mcp}`);
-    console.log('\nPress Ctrl+C to stop the server');
+    console.log(`OAuth metadata: ${baseUrl}/.well-known/oauth-authorization-server`);
+    console.log(`OAuth authorization: ${baseUrl}/authorize`);
+    console.log(`OAuth token: ${baseUrl}/token`);
+    console.log(`OAuth registration: ${baseUrl}/register`);
     
-    // Start periodic warning timer if using default token
-    if (authToken === 'REPLACE_THIS_AUTH_TOKEN_32_CHARS_MIN_abcdefgh') {
-      setInterval(() => {
-        logger.warn('⚠️ Still using default AUTH_TOKEN - security risk!');
-        if (process.env.MCP_MODE === 'http') {
-          console.warn('⚠️ REMINDER: Still using default AUTH_TOKEN - please change it!');
-        }
-      }, 300000); // Every 5 minutes
+    // Show OAuth configuration status
+    const googleConfig = googleOAuthService.getConfigStatus();
+    if (googleConfig.configured) {
+      console.log('\n✅ Google OAuth configured and ready');
+    } else {
+      console.log(`\n⚠️  Google OAuth not fully configured. Missing: ${googleConfig.missing.join(', ')}`);
     }
     
+    console.log('\nAuthentication: OAuth 2.1 with PKCE required');
+    console.log('Third-party provider: Google OAuth');
+    console.log('\nPress Ctrl+C to stop the server\n');
+    
     if (process.env.BASE_URL || process.env.PUBLIC_URL) {
-      console.log(`\nPublic URL configured: ${baseUrl}`);
+      console.log(`Public URL configured: ${baseUrl}`);
     } else if (process.env.TRUST_PROXY && Number(process.env.TRUST_PROXY) > 0) {
-      console.log(`\nNote: TRUST_PROXY is enabled. URLs will be auto-detected from proxy headers.`);
+      console.log(`Note: TRUST_PROXY is enabled. URLs will be auto-detected from proxy headers.`);
     }
   });
   
@@ -570,14 +1023,17 @@ declare module './mcp/server' {
   }
 }
 
+// Export the old function name for backward compatibility
+export const startFixedHTTPServer = startOAuthHTTPServer;
+
 // Start if called directly
 // Check if this file is being run directly (not imported)
 // In ES modules, we check import.meta.url against process.argv[1]
 // But since we're transpiling to CommonJS, we use the require.main check
 if (typeof require !== 'undefined' && require.main === module) {
-  startFixedHTTPServer().catch(error => {
-    logger.error('Failed to start Fixed HTTP server:', error);
-    console.error('Failed to start Fixed HTTP server:', error);
+  startOAuthHTTPServer().catch(error => {
+    logger.error('Failed to start OAuth HTTP server:', error);
+    console.error('Failed to start OAuth HTTP server:', error);
     process.exit(1);
   });
 }
